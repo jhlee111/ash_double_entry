@@ -76,4 +76,32 @@ defmodule AshDoubleEntry.TransactionTest do
              |> Ash.Changeset.for_create(:post, %{entries: entries})
              |> Ash.create()
   end
+
+  test "Account.balance_as_of reflects multi-leg Transaction entries" do
+    {:ok, cash} =
+      Account
+      |> Ash.Changeset.for_create(:open, %{identifier: "cash_bal", currency: "USD"})
+      |> Ash.create()
+
+    {:ok, revenue} =
+      Account
+      |> Ash.Changeset.for_create(:open, %{identifier: "revenue_bal", currency: "USD"})
+      |> Ash.create()
+
+    entries = [
+      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, 50_00)},
+      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, 50_00)}
+    ]
+
+    {:ok, _t} =
+      Transaction
+      |> Ash.Changeset.for_create(:post, %{entries: entries})
+      |> Ash.create()
+
+    cash = Ash.load!(cash, :balance_as_of)
+    revenue = Ash.load!(revenue, :balance_as_of)
+
+    assert Money.equal?(cash.balance_as_of, Money.new!(:USD, 50_00))
+    assert Money.equal?(revenue.balance_as_of, Money.new!(:USD, -50_00))
+  end
 end

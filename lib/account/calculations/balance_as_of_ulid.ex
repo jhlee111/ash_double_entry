@@ -3,7 +3,10 @@
 # SPDX-License-Identifier: MIT
 
 defmodule AshDoubleEntry.Account.Calculations.BalanceAsOfUlid do
-  # Calculates the balance as of a given transfer id. See the getting started guide for more.
+  # Calculates the balance as of a given ULID. Reads the union of
+  # transfer-keyed and entry-keyed Balance rows. AshDoubleEntry.ULID is
+  # time-sortable across both sources, so the chronologically latest row
+  # wins via `coalesce(transfer_id, entry_id)` DESC ordering.
   @moduledoc false
   use Ash.Resource.Calculation
   require Ash.Expr
@@ -17,14 +20,24 @@ defmodule AshDoubleEntry.Account.Calculations.BalanceAsOfUlid do
       Ash.Expr.expr(
         first(balances,
           field: :balance,
-          query: [sort: [transfer_id: :desc], filter: transfer_id <= ^context.arguments[:ulid]]
+          query: [
+            sort: [effective_ulid: :desc],
+            filter:
+              transfer_id <= ^context.arguments[:ulid] or
+                entry_id <= ^context.arguments[:ulid]
+          ]
         ) || composite_type(%{currency: currency, amount: 0}, AshMoney.Types.Money)
       )
     else
       Ash.Expr.expr(
         first(balances,
           field: :balance,
-          query: [sort: [transfer_id: :desc], filter: transfer_id <= ^context.arguments[:ulid]]
+          query: [
+            sort: [effective_ulid: :desc],
+            filter:
+              transfer_id <= ^context.arguments[:ulid] or
+                entry_id <= ^context.arguments[:ulid]
+          ]
         ) || %{currency: currency, amount: 0}
       )
     end

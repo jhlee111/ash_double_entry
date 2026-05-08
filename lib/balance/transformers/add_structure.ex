@@ -88,6 +88,11 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
     )
     |> maybe_add_entry_relationship()
     |> maybe_add_entry_identity()
+    |> Ash.Resource.Builder.add_new_calculation(
+      :effective_ulid,
+      AshDoubleEntry.ULID,
+      expr(transfer_id || entry_id)
+    )
   end
 
   defbuilder maybe_add_entry_relationship(dsl) do
