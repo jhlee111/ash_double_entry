@@ -266,6 +266,18 @@ YourApp.Ledger.Account
 # => Money.new!(20, :USD)
 ```
 
+## When to use Transaction vs Transfer
+
+`Transfer` is a 2-account convenience: one debit, one credit. For
+business events that affect more than two accounts (e.g. POS sales with
+sales tax, payroll with multiple deductions, COGS adjustments), use
+`Transaction` directly. See the
+[Multi-Leg Journal Entries](multi-leg-journal-entries.md) tutorial.
+
+In v1.x both APIs coexist independently. A future release may unify
+`Transfer` over `Transaction` internally; the public Transfer API will
+remain unchanged.
+
 ## What else can you do?
 
 There are tons of things you can do with your resources. You can add code interfaces to give yourself a nice functional api. You can add custom attributes, aggregates, calculations, relationships, validations, changes, all the great things built into `Ash.Resource`! See the docs for more: [AshHq](https://ash-hq.org).
