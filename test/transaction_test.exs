@@ -19,9 +19,9 @@ defmodule AshDoubleEntry.TransactionTest do
       |> Ash.create()
 
     entries = [
-      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, 108_00)},
-      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, 100_00)},
-      %{account_id: tax.id, side: :credit, amount: Money.new!(:USD, 8_00)}
+      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "108.00")},
+      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "100.00")},
+      %{account_id: tax.id, side: :credit, amount: Money.new!(:USD, "8.00")}
     ]
 
     {:ok, transaction} =
@@ -45,8 +45,8 @@ defmodule AshDoubleEntry.TransactionTest do
       |> Ash.create()
 
     entries = [
-      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, 100_00)},
-      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, 50_00)}
+      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "100.00")},
+      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "50.00")}
     ]
 
     assert {:error, _} =
@@ -67,8 +67,8 @@ defmodule AshDoubleEntry.TransactionTest do
       |> Ash.create()
 
     entries = [
-      %{account_id: usd.id, side: :debit, amount: Money.new!(:USD, 100_00)},
-      %{account_id: eur.id, side: :credit, amount: Money.new!(:EUR, 100_00)}
+      %{account_id: usd.id, side: :debit, amount: Money.new!(:USD, "100.00")},
+      %{account_id: eur.id, side: :credit, amount: Money.new!(:EUR, "100.00")}
     ]
 
     assert {:error, _} =
@@ -89,8 +89,8 @@ defmodule AshDoubleEntry.TransactionTest do
       |> Ash.create()
 
     entries = [
-      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, 50_00)},
-      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, 50_00)}
+      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "50.00")},
+      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "50.00")}
     ]
 
     {:ok, _t} =
@@ -101,8 +101,8 @@ defmodule AshDoubleEntry.TransactionTest do
     cash = Ash.load!(cash, :balance_as_of)
     revenue = Ash.load!(revenue, :balance_as_of)
 
-    assert Money.equal?(cash.balance_as_of, Money.new!(:USD, 50_00))
-    assert Money.equal?(revenue.balance_as_of, Money.new!(:USD, -50_00))
+    assert Money.equal?(cash.balance_as_of, Money.new!(:USD, "50.00"))
+    assert Money.equal?(revenue.balance_as_of, Money.new!(:USD, "-50.00"))
   end
 
   test "Transaction.reverse creates flipped-side Transaction with reverses_transaction_id" do
@@ -117,8 +117,8 @@ defmodule AshDoubleEntry.TransactionTest do
       |> Ash.create()
 
     entries = [
-      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, 100_00)},
-      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, 100_00)}
+      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "100.00")},
+      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "100.00")}
     ]
 
     {:ok, original} =

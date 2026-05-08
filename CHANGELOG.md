@@ -14,7 +14,17 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 ## [Unreleased]
 
 ### Added
-- Native multi-leg journal entries via new `AshDoubleEntry.Transaction` and `AshDoubleEntry.Entry` extensions. A Transaction posts N Entries that must sum to zero (Σ debits == Σ credits, single currency). Fully additive — existing `Transfer` API and behavior unchanged.
+- `AshDoubleEntry.Transaction` extension — post multi-leg journal entries with N debit/credit Entries via `Transaction.post`. Validates `Σ debits == Σ credits` per currency.
+- `AshDoubleEntry.Entry` extension — represents one debit or credit posting within a Transaction. Created only via Transaction.post (no exposed direct create).
+- `Transaction.reverse` action — creates a flipped-side reversing Transaction with `reverses_transaction_id` set.
+- `Balance` resource gains optional `entry_resource` config + `:entry_id` FK + `(account_id, entry_id)` identity (alongside existing `transfer_id` setup — fully additive). `:transfer_id` relaxed to nullable so entry-driven Balance rows don't require a Transfer.
+- `Account.balance_as_of_ulid` and `:balance_as_of` calculations now read from the union of transfer-keyed and entry-keyed Balance rows (transparent to existing Transfer users; new for multi-leg users).
+- `mix ash_double_entry.gen.multi_leg_migration` generator — creates `transactions` + `entries` tables.
+- New tutorial: `documentation/tutorials/multi-leg-journal-entries.md`.
+- Pointer in getting-started tutorial to the multi-leg tutorial.
+
+### Changed
+- (None — fully additive. Existing `Transfer` API and behavior unchanged.)
 
 ## [v1.0.17](https://github.com/ash-project/ash_double_entry/compare/v1.0.16...v1.0.17) (2026-04-12)
 

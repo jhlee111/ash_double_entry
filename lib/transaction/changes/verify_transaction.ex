@@ -26,9 +26,8 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   defp validate_entries([_]), do: {:error, "Transaction must have at least 2 entries"}
 
   defp validate_entries(entries) do
-    with :ok <- validate_currency(entries),
-         :ok <- validate_balance(entries) do
-      :ok
+    with :ok <- validate_currency(entries) do
+      validate_balance(entries)
     end
   end
 
