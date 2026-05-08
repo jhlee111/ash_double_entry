@@ -52,6 +52,10 @@ defmodule AshDoubleEntry.Entry.Transformers.AddStructure do
     |> Ash.Resource.Builder.add_new_action(:create, :create,
       accept: [:transaction_id, :account_id, :side, :amount]
     )
+    |> Ash.Resource.Builder.add_change({AshDoubleEntry.Entry.Changes.VerifyEntry, []},
+      only_when_valid?: true,
+      on: [:create]
+    )
     |> add_primary_read_action()
   end
 
