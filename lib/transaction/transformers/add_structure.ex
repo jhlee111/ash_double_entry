@@ -58,6 +58,29 @@ defmodule AshDoubleEntry.Transaction.Transformers.AddStructure do
         )
       ]
     )
+    |> Ash.Resource.Builder.add_new_action(:create, :reverse,
+      accept: [],
+      arguments: [
+        Ash.Resource.Builder.build_action_argument(
+          :original_transaction_id,
+          AshDoubleEntry.ULID,
+          allow_nil?: false
+        ),
+        Ash.Resource.Builder.build_action_argument(
+          :entries,
+          {:array, :map},
+          allow_nil?: true
+        )
+      ],
+      changes: [
+        Ash.Resource.Builder.build_change(
+          {AshDoubleEntry.Transaction.Changes.ReverseTransaction, []}
+        ),
+        Ash.Resource.Builder.build_change(
+          {AshDoubleEntry.Transaction.Changes.VerifyTransaction, []}
+        )
+      ]
+    )
     |> add_primary_read_action()
   end
 

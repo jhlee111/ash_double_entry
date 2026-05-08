@@ -104,4 +104,40 @@ defmodule AshDoubleEntry.TransactionTest do
     assert Money.equal?(cash.balance_as_of, Money.new!(:USD, 50_00))
     assert Money.equal?(revenue.balance_as_of, Money.new!(:USD, -50_00))
   end
+
+  test "Transaction.reverse creates flipped-side Transaction with reverses_transaction_id" do
+    {:ok, cash} =
+      Account
+      |> Ash.Changeset.for_create(:open, %{identifier: "cash_rev", currency: "USD"})
+      |> Ash.create()
+
+    {:ok, revenue} =
+      Account
+      |> Ash.Changeset.for_create(:open, %{identifier: "revenue_rev", currency: "USD"})
+      |> Ash.create()
+
+    entries = [
+      %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, 100_00)},
+      %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, 100_00)}
+    ]
+
+    {:ok, original} =
+      Transaction
+      |> Ash.Changeset.for_create(:post, %{entries: entries})
+      |> Ash.create()
+
+    {:ok, reversal} =
+      Transaction
+      |> Ash.Changeset.for_create(:reverse, %{original_transaction_id: original.id})
+      |> Ash.create()
+
+    reversal = Ash.load!(reversal, :entries)
+    assert reversal.reverses_transaction_id == original.id
+    assert length(reversal.entries) == 2
+
+    cash = Ash.load!(cash, :balance_as_of)
+    revenue = Ash.load!(revenue, :balance_as_of)
+    assert Money.equal?(cash.balance_as_of, Money.new!(:USD, 0))
+    assert Money.equal?(revenue.balance_as_of, Money.new!(:USD, 0))
+  end
 end
