@@ -12,6 +12,20 @@ defmodule AshDoubleEntry.Transaction.Transformers.AddStructure do
   def before?(_), do: false
 
   def transform(dsl) do
-    {:ok, dsl}
+    dsl
+    |> Ash.Resource.Builder.add_new_attribute(:id, AshDoubleEntry.ULID,
+      primary_key?: true,
+      allow_nil?: false,
+      default: &AshDoubleEntry.ULID.generate/0,
+      generated?: false
+    )
+    |> Ash.Resource.Builder.add_new_attribute(:posted_at, :utc_datetime_usec,
+      allow_nil?: false,
+      default: &DateTime.utc_now/0
+    )
+    |> Ash.Resource.Builder.add_new_attribute(:inserted_at, :utc_datetime_usec,
+      allow_nil?: false,
+      default: &DateTime.utc_now/0
+    )
   end
 end
