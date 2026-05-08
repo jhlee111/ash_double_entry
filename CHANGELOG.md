@@ -11,6 +11,11 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 <!-- changelog -->
 
+## [Unreleased]
+
+### Added
+- Native multi-leg journal entries via new `AshDoubleEntry.Transaction` and `AshDoubleEntry.Entry` extensions. A Transaction posts N Entries that must sum to zero (Σ debits == Σ credits, single currency). Fully additive — existing `Transfer` API and behavior unchanged.
+
 ## [v1.0.17](https://github.com/ash-project/ash_double_entry/compare/v1.0.16...v1.0.17) (2026-04-12)
 
 
