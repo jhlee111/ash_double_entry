@@ -44,4 +44,36 @@ defmodule AshDoubleEntry.TransactionCompileTest do
   test "Transaction has primary :read action" do
     assert AshDoubleEntry.Test.Transaction |> Ash.Resource.Info.primary_action(:read)
   end
+
+  test "Entry has expected attributes" do
+    attrs =
+      AshDoubleEntry.Test.Entry
+      |> Ash.Resource.Info.attributes()
+      |> Enum.map(& &1.name)
+      |> MapSet.new()
+
+    assert MapSet.member?(attrs, :id)
+    assert MapSet.member?(attrs, :transaction_id)
+    assert MapSet.member?(attrs, :account_id)
+    assert MapSet.member?(attrs, :side)
+    assert MapSet.member?(attrs, :amount)
+    assert MapSet.member?(attrs, :inserted_at)
+
+    side_attr = AshDoubleEntry.Test.Entry |> Ash.Resource.Info.attribute(:side)
+    assert side_attr.constraints[:one_of] == [:debit, :credit]
+  end
+
+  test "Entry has belongs_to :transaction and :account relationships" do
+    rels =
+      AshDoubleEntry.Test.Entry
+      |> Ash.Resource.Info.relationships()
+      |> Enum.map(& &1.name)
+
+    assert :transaction in rels
+    assert :account in rels
+  end
+
+  test "Entry has primary :read action" do
+    assert AshDoubleEntry.Test.Entry |> Ash.Resource.Info.primary_action(:read)
+  end
 end
