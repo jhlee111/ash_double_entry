@@ -34,4 +34,14 @@ defmodule AshDoubleEntry.TransactionCompileTest do
     assert :reverses_transaction_id in attrs
     assert :reverses_transaction in rels
   end
+
+  test "Transaction has has_many :entries relationship" do
+    rel = AshDoubleEntry.Test.Transaction |> Ash.Resource.Info.relationship(:entries)
+    assert rel
+    assert rel.type == :has_many
+  end
+
+  test "Transaction has primary :read action" do
+    assert AshDoubleEntry.Test.Transaction |> Ash.Resource.Info.primary_action(:read)
+  end
 end

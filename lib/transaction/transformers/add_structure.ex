@@ -37,5 +37,25 @@ defmodule AshDoubleEntry.Transaction.Transformers.AddStructure do
       allow_nil?: true,
       source_attribute: :reverses_transaction_id
     )
+    |> Ash.Resource.Builder.add_new_relationship(
+      :has_many,
+      :entries,
+      AshDoubleEntry.Transaction.Info.transaction_entry_resource!(dsl),
+      destination_attribute: :transaction_id
+    )
+    |> add_primary_read_action()
+  end
+
+  defp add_primary_read_action({:ok, dsl}), do: add_primary_read_action(dsl)
+
+  defp add_primary_read_action(dsl) do
+    if Ash.Resource.Info.primary_action(dsl, :read) do
+      {:ok, dsl}
+    else
+      Ash.Resource.Builder.add_action(dsl, :read, :read,
+        primary?: true,
+        pagination: Ash.Resource.Builder.build_pagination(keyset?: true, required?: false)
+      )
+    end
   end
 end
