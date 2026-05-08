@@ -76,4 +76,9 @@ defmodule AshDoubleEntry.TransactionCompileTest do
   test "Entry has primary :read action" do
     assert AshDoubleEntry.Test.Entry |> Ash.Resource.Info.primary_action(:read)
   end
+
+  test "Entry has :create action" do
+    create = AshDoubleEntry.Test.Entry |> Ash.Resource.Info.action(:create)
+    assert create
+  end
 end

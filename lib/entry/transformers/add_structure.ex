@@ -49,6 +49,9 @@ defmodule AshDoubleEntry.Entry.Transformers.AddStructure do
       allow_nil?: false,
       source_attribute: :account_id
     )
+    |> Ash.Resource.Builder.add_new_action(:create, :create,
+      accept: [:transaction_id, :account_id, :side, :amount]
+    )
     |> add_primary_read_action()
   end
 
