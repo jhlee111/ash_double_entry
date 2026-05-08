@@ -27,5 +27,15 @@ defmodule AshDoubleEntry.Transaction.Transformers.AddStructure do
       allow_nil?: false,
       default: &DateTime.utc_now/0
     )
+    |> Ash.Resource.Builder.add_new_relationship(
+      :belongs_to,
+      :reverses_transaction,
+      Spark.Dsl.Transformer.get_persisted(dsl, :module),
+      attribute_writable?: true,
+      define_attribute?: true,
+      attribute_type: AshDoubleEntry.ULID,
+      allow_nil?: true,
+      source_attribute: :reverses_transaction_id
+    )
   end
 end

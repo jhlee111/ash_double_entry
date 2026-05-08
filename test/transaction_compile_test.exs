@@ -19,4 +19,19 @@ defmodule AshDoubleEntry.TransactionCompileTest do
     assert MapSet.member?(attrs, :posted_at)
     assert MapSet.member?(attrs, :inserted_at)
   end
+
+  test "Transaction has :reverses_transaction_id attribute and self belongs_to" do
+    attrs =
+      AshDoubleEntry.Test.Transaction
+      |> Ash.Resource.Info.attributes()
+      |> Enum.map(& &1.name)
+
+    rels =
+      AshDoubleEntry.Test.Transaction
+      |> Ash.Resource.Info.relationships()
+      |> Enum.map(& &1.name)
+
+    assert :reverses_transaction_id in attrs
+    assert :reverses_transaction in rels
+  end
 end
