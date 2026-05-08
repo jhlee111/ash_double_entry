@@ -41,7 +41,7 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
       :transfer,
       AshDoubleEntry.Balance.Info.balance_transfer_resource!(dsl),
       attribute_type: AshDoubleEntry.ULID,
-      allow_nil?: false,
+      allow_nil?: true,
       attribute_writable?: true
     )
     |> Ash.Resource.Builder.add_new_relationship(
@@ -53,7 +53,7 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
     )
     |> add_primary_read_action()
     |> Ash.Resource.Builder.add_new_action(:create, :upsert_balance,
-      accept: [:balance, :account_id, :transfer_id],
+      accept: upsert_accept(dsl),
       upsert?: true,
       upsert_identity: :unique_references
     )
@@ -133,6 +133,15 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
         primary?: true,
         pagination: Ash.Resource.Builder.build_pagination(keyset?: true)
       )
+    end
+  end
+
+  defp upsert_accept(dsl) do
+    base = [:balance, :account_id, :transfer_id]
+
+    case AshDoubleEntry.Balance.Info.balance_entry_resource(dsl) do
+      {:ok, entry_resource} when not is_nil(entry_resource) -> base ++ [:entry_id]
+      _ -> base
     end
   end
 

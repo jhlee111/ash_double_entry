@@ -43,6 +43,21 @@ defmodule AshDoubleEntry.Transaction.Transformers.AddStructure do
       AshDoubleEntry.Transaction.Info.transaction_entry_resource!(dsl),
       destination_attribute: :transaction_id
     )
+    |> Ash.Resource.Builder.add_new_action(:create, :post,
+      accept: AshDoubleEntry.Transaction.Info.transaction_create_accept!(dsl),
+      arguments: [
+        Ash.Resource.Builder.build_action_argument(
+          :entries,
+          {:array, :map},
+          allow_nil?: false
+        )
+      ],
+      changes: [
+        Ash.Resource.Builder.build_change(
+          {AshDoubleEntry.Transaction.Changes.VerifyTransaction, []}
+        )
+      ]
+    )
     |> add_primary_read_action()
   end
 
