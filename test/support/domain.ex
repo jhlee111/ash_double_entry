@@ -10,5 +10,7 @@ defmodule AshDoubleEntry.Test.Domain do
     resource AshDoubleEntry.Test.Account
     resource AshDoubleEntry.Test.Transfer
     resource AshDoubleEntry.Test.Balance
+    resource AshDoubleEntry.Test.Transaction
+    resource AshDoubleEntry.Test.Entry
   end
 end

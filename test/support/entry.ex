@@ -2,21 +2,20 @@
 #
 # SPDX-License-Identifier: MIT
 
-defmodule AshDoubleEntry.Test.Transaction do
+defmodule AshDoubleEntry.Test.Entry do
   @moduledoc false
   use Ash.Resource,
     domain: AshDoubleEntry.Test.Domain,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshDoubleEntry.Transaction]
+    extensions: [AshDoubleEntry.Entry]
 
   postgres do
-    table "transactions"
+    table "entries"
     repo AshDoubleEntry.Test.Repo
   end
 
-  transaction do
+  entry do
     account_resource AshDoubleEntry.Test.Account
-    entry_resource AshDoubleEntry.Test.Entry
-    balance_resource AshDoubleEntry.Test.Balance
+    transaction_resource AshDoubleEntry.Test.Transaction
   end
 end
