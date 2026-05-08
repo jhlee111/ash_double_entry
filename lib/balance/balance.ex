@@ -19,6 +19,11 @@ defmodule AshDoubleEntry.Balance do
         doc: "The resource used for transfers",
         required: true
       ],
+      entry_resource: [
+        type: {:spark, Ash.Resource},
+        doc: "The Entry resource. Optional for backward compatibility with Transfer-only setups.",
+        required: false
+      ],
       account_resource: [
         type: {:spark, Ash.Resource},
         doc: "The resource used for accounts",

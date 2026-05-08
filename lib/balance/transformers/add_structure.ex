@@ -86,6 +86,43 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
     |> Ash.Resource.Builder.add_new_identity(:unique_references, [:account_id, :transfer_id],
       pre_check_with: pre_check_with(dsl)
     )
+    |> maybe_add_entry_relationship()
+    |> maybe_add_entry_identity()
+  end
+
+  defbuilder maybe_add_entry_relationship(dsl) do
+    case AshDoubleEntry.Balance.Info.balance_entry_resource(dsl) do
+      {:ok, entry_resource} when not is_nil(entry_resource) ->
+        Ash.Resource.Builder.add_new_relationship(
+          dsl,
+          :belongs_to,
+          :entry,
+          entry_resource,
+          attribute_writable?: true,
+          define_attribute?: true,
+          attribute_type: AshDoubleEntry.ULID,
+          allow_nil?: true,
+          source_attribute: :entry_id
+        )
+
+      _ ->
+        {:ok, dsl}
+    end
+  end
+
+  defbuilder maybe_add_entry_identity(dsl) do
+    case AshDoubleEntry.Balance.Info.balance_entry_resource(dsl) do
+      {:ok, entry_resource} when not is_nil(entry_resource) ->
+        Ash.Resource.Builder.add_new_identity(
+          dsl,
+          :unique_account_entry,
+          [:account_id, :entry_id],
+          pre_check_with: pre_check_with(dsl)
+        )
+
+      _ ->
+        {:ok, dsl}
+    end
   end
 
   defbuilder add_primary_read_action(dsl) do

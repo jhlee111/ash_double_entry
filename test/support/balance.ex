@@ -54,6 +54,7 @@ defmodule AshDoubleEntry.Test.Balance do
   balance do
     transfer_resource AshDoubleEntry.Test.Transfer
     account_resource AshDoubleEntry.Test.Account
+    entry_resource AshDoubleEntry.Test.Entry
   end
 
   actions do

@@ -81,4 +81,19 @@ defmodule AshDoubleEntry.TransactionCompileTest do
     create = AshDoubleEntry.Test.Entry |> Ash.Resource.Info.action(:create)
     assert create
   end
+
+  test "Balance has :entry_id attribute and :entry relationship" do
+    attrs =
+      AshDoubleEntry.Test.Balance
+      |> Ash.Resource.Info.attributes()
+      |> Enum.map(& &1.name)
+
+    rels =
+      AshDoubleEntry.Test.Balance
+      |> Ash.Resource.Info.relationships()
+      |> Enum.map(& &1.name)
+
+    assert :entry_id in attrs
+    assert :entry in rels
+  end
 end
