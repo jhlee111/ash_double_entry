@@ -93,6 +93,7 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
               Ash.Context.to_opts(context,
                 domain: changeset.domain,
                 authorize?: false,
+                strategy: [:atomic, :stream, :atomic_batches],
                 return_errors?: true,
                 stop_on_error?: true
               )
