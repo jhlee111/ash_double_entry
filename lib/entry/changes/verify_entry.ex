@@ -12,6 +12,23 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
     if changeset.context[:ash_double_entry][:skip_balance_updates] do
       changeset
     else
+      changeset =
+        if changeset.action.type == :create do
+          timestamp = Ash.Changeset.get_attribute(changeset, :timestamp)
+
+          timestamp =
+            case timestamp do
+              nil -> System.system_time(:millisecond)
+              timestamp -> DateTime.to_unix(timestamp, :millisecond)
+            end
+
+          ulid = AshDoubleEntry.ULID.generate(timestamp)
+
+          Ash.Changeset.force_change_attribute(changeset, :id, ulid)
+        else
+          changeset
+        end
+
       Ash.Changeset.after_action(changeset, fn _changeset, result ->
         delta =
           case result.side do
@@ -61,8 +78,32 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
           )
         )
         |> case do
-          %Ash.BulkResult{status: :success} -> {:ok, result}
-          %Ash.BulkResult{errors: errors} -> {:error, errors}
+          %Ash.BulkResult{status: :success} ->
+            # Ripple a (possibly backdated) entry's effect through the LATER
+            # balance rows of this account. For now-dated entries the filter
+            # matches zero rows — a no-op.
+            balance_resource
+            |> Ash.bulk_update(
+              :shift_balances_after,
+              %{
+                account_id: account.id,
+                delta: delta,
+                after_ulid: result.id
+              },
+              Ash.Context.to_opts(context,
+                domain: changeset.domain,
+                authorize?: false,
+                return_errors?: true,
+                stop_on_error?: true
+              )
+            )
+            |> case do
+              %Ash.BulkResult{status: :success} -> {:ok, result}
+              %Ash.BulkResult{errors: errors} -> {:error, errors}
+            end
+
+          %Ash.BulkResult{errors: errors} ->
+            {:error, errors}
         end
       end)
     end

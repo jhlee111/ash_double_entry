@@ -23,8 +23,10 @@ defmodule AshDoubleEntry.Entry.Transformers.AddStructure do
       allow_nil?: false,
       constraints: [one_of: [:debit, :credit]]
     )
-    |> Ash.Resource.Builder.add_new_attribute(:amount, AshMoney.Types.Money,
-      allow_nil?: false
+    |> Ash.Resource.Builder.add_new_attribute(:amount, AshMoney.Types.Money, allow_nil?: false)
+    |> Ash.Resource.Builder.add_new_attribute(:timestamp, :utc_datetime_usec,
+      allow_nil?: false,
+      default: &DateTime.utc_now/0
     )
     |> Ash.Resource.Builder.add_new_attribute(:inserted_at, :utc_datetime_usec,
       allow_nil?: false,
@@ -50,7 +52,7 @@ defmodule AshDoubleEntry.Entry.Transformers.AddStructure do
       source_attribute: :account_id
     )
     |> Ash.Resource.Builder.add_new_action(:create, :create,
-      accept: [:transaction_id, :account_id, :side, :amount]
+      accept: [:transaction_id, :account_id, :side, :amount, :timestamp]
     )
     |> Ash.Resource.Builder.add_change({AshDoubleEntry.Entry.Changes.VerifyEntry, []},
       only_when_valid?: true,

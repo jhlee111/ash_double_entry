@@ -81,11 +81,11 @@ defmodule AshDoubleEntry.MixProject do
       "test.create": "ash_postgres.create",
       "test.migrate": "ash_postgres.migrate",
       "spark.formatter":
-        "spark.formatter --extensions AshDoubleEntry.Account,AshDoubleEntry.Balance,AshDoubleEntry.Transfer",
+        "spark.formatter --extensions AshDoubleEntry.Account,AshDoubleEntry.Balance,AshDoubleEntry.Transfer,AshDoubleEntry.Transaction,AshDoubleEntry.Entry",
       "spark.cheat_sheets":
-        "spark.cheat_sheets --extensions AshDoubleEntry.Account,AshDoubleEntry.Balance,AshDoubleEntry.Transfer",
+        "spark.cheat_sheets --extensions AshDoubleEntry.Account,AshDoubleEntry.Balance,AshDoubleEntry.Transfer,AshDoubleEntry.Transaction,AshDoubleEntry.Entry",
       "spark.cheat_sheets_in_search":
-        "spark.cheat_sheets_in_search --extensions AshDoubleEntry.Account,AshDoubleEntry.Balance,AshDoubleEntry.Transfer"
+        "spark.cheat_sheets_in_search --extensions AshDoubleEntry.Account,AshDoubleEntry.Balance,AshDoubleEntry.Transfer,AshDoubleEntry.Transaction,AshDoubleEntry.Entry"
     ]
   end
 

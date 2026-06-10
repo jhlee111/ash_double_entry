@@ -88,6 +88,7 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
     )
     |> maybe_add_entry_relationship()
     |> maybe_add_entry_identity()
+    |> maybe_add_shift_action()
     |> Ash.Resource.Builder.add_new_calculation(
       :effective_ulid,
       AshDoubleEntry.ULID,
@@ -108,6 +109,45 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
           attribute_type: AshDoubleEntry.ULID,
           allow_nil?: true,
           source_attribute: :entry_id
+        )
+
+      _ ->
+        {:ok, dsl}
+    end
+  end
+
+  # A single-account, signed-delta ripple for backdated entries. Distinct from
+  # :adjust_balance, whose Transfer from/to PAIR semantics would invert the
+  # sign when reused with one account. Only added for entry-aware consumers
+  # (the filter references entry_id). The filter covers BOTH transfer-keyed
+  # and entry-keyed later rows: one account can receive both kinds.
+  defbuilder maybe_add_shift_action(dsl) do
+    case AshDoubleEntry.Balance.Info.balance_entry_resource(dsl) do
+      {:ok, entry_resource} when not is_nil(entry_resource) ->
+        Ash.Resource.Builder.add_new_action(dsl, :update, :shift_balances_after,
+          changes: [
+            Ash.Resource.Builder.build_action_change(
+              {Ash.Resource.Change.Filter,
+               filter:
+                 expr(
+                   account_id == ^arg(:account_id) and
+                     (transfer_id > ^arg(:after_ulid) or entry_id > ^arg(:after_ulid))
+                 )}
+            ),
+            Ash.Resource.Builder.build_action_change(
+              {AshDoubleEntry.Balance.Changes.ShiftBalance,
+               can_add_money?: AshDoubleEntry.Balance.Info.balance_data_layer_can_add_money?(dsl)}
+            )
+          ],
+          arguments: [
+            Ash.Resource.Builder.build_action_argument(:account_id, :uuid, allow_nil?: false),
+            Ash.Resource.Builder.build_action_argument(:delta, AshMoney.Types.Money,
+              allow_nil?: false
+            ),
+            Ash.Resource.Builder.build_action_argument(:after_ulid, AshDoubleEntry.ULID,
+              allow_nil?: false
+            )
+          ]
         )
 
       _ ->

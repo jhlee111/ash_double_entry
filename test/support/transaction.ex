@@ -11,12 +11,13 @@ defmodule AshDoubleEntry.Test.Transaction do
 
   postgres do
     table "transactions"
-    repo AshDoubleEntry.Test.Repo
+    repo(AshDoubleEntry.Test.Repo)
   end
 
   transaction do
     account_resource AshDoubleEntry.Test.Account
     entry_resource AshDoubleEntry.Test.Entry
     balance_resource AshDoubleEntry.Test.Balance
+    create_accept [:posted_at]
   end
 end

@@ -140,4 +140,102 @@ defmodule AshDoubleEntry.TransactionTest do
     assert Money.equal?(cash.balance_as_of, Money.new!(:USD, 0))
     assert Money.equal?(revenue.balance_as_of, Money.new!(:USD, 0))
   end
+
+  describe "backdated posting (posted_at → Entry ULIDs)" do
+    test "entries of a backdated transaction sort at posted_at, and balance_as_of(posted_at) includes them" do
+      {:ok, account_one} =
+        Account
+        |> Ash.Changeset.for_create(:open, %{identifier: "cash_bd1", currency: "USD"})
+        |> Ash.create()
+
+      {:ok, account_two} =
+        Account
+        |> Ash.Changeset.for_create(:open, %{identifier: "revenue_bd1", currency: "USD"})
+        |> Ash.create()
+
+      backdate = DateTime.add(DateTime.utc_now(), -30 * 24 * 60 * 60, :second)
+
+      {:ok, transaction} =
+        Transaction
+        |> Ash.Changeset.for_create(:post, %{
+          entries: [
+            %{account_id: account_one.id, side: :debit, amount: Money.new!(:USD, "100.00")},
+            %{account_id: account_two.id, side: :credit, amount: Money.new!(:USD, "100.00")}
+          ],
+          posted_at: backdate
+        })
+        |> Ash.create()
+
+      transaction = Ash.load!(transaction, :entries)
+
+      for entry <- transaction.entries do
+        # The ULID encodes the backdated millisecond, not now: it sorts at-or-before
+        # backdate's last ULID and after one second earlier. (The ULID module has no
+        # timestamp extractor — ULID ordering IS the contract balance_as_of uses.)
+        assert entry.id <= AshDoubleEntry.ULID.generate_last(backdate)
+        assert entry.id > AshDoubleEntry.ULID.generate(DateTime.add(backdate, -1, :second))
+      end
+
+      # Boundary inclusivity: as-of exactly the backdate includes the entries...
+      account_one_at =
+        Ash.load!(account_one, balance_as_of: %{timestamp: backdate}).balance_as_of
+
+      assert Money.equal?(account_one_at, Money.new!(:USD, "100.00"))
+
+      # ...and one second before excludes them (zero/default balance).
+      balance_before =
+        Ash.load!(
+          account_one,
+          balance_as_of: %{timestamp: DateTime.add(backdate, -1, :second)}
+        ).balance_as_of
+
+      assert Money.equal?(balance_before, Money.new!(:USD, 0))
+    end
+
+    test "a backdated insert shifts the balances of LATER entries (out-of-order correctness)" do
+      {:ok, account_one} =
+        Account
+        |> Ash.Changeset.for_create(:open, %{identifier: "cash_bd2", currency: "USD"})
+        |> Ash.create()
+
+      {:ok, account_two} =
+        Account
+        |> Ash.Changeset.for_create(:open, %{identifier: "revenue_bd2", currency: "USD"})
+        |> Ash.create()
+
+      {:ok, _now_txn} =
+        Transaction
+        |> Ash.Changeset.for_create(:post, %{
+          entries: [
+            %{account_id: account_one.id, side: :debit, amount: Money.new!(:USD, "50.00")},
+            %{account_id: account_two.id, side: :credit, amount: Money.new!(:USD, "50.00")}
+          ]
+        })
+        |> Ash.create()
+
+      yesterday = DateTime.add(DateTime.utc_now(), -1 * 24 * 60 * 60, :second)
+
+      {:ok, _backdated_txn} =
+        Transaction
+        |> Ash.Changeset.for_create(:post, %{
+          entries: [
+            %{account_id: account_one.id, side: :debit, amount: Money.new!(:USD, "100.00")},
+            %{account_id: account_two.id, side: :credit, amount: Money.new!(:USD, "100.00")}
+          ],
+          posted_at: yesterday
+        })
+        |> Ash.create()
+
+      # The later (now-dated) balance row was shifted by the backdated insert.
+      at_now =
+        Ash.load!(account_one, balance_as_of: %{timestamp: DateTime.utc_now()}).balance_as_of
+
+      assert Money.equal?(at_now, Money.new!(:USD, "150.00"))
+
+      at_yesterday =
+        Ash.load!(account_one, balance_as_of: %{timestamp: yesterday}).balance_as_of
+
+      assert Money.equal?(at_yesterday, Money.new!(:USD, "100.00"))
+    end
+  end
 end

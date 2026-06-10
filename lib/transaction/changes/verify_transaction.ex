@@ -85,7 +85,8 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
           transaction_id: transaction.id,
           account_id: Map.get(e, :account_id) || Map.get(e, "account_id"),
           side: entry_side(e),
-          amount: entry_amount(e)
+          amount: entry_amount(e),
+          timestamp: transaction.posted_at
         }
       end)
 

@@ -9,9 +9,11 @@ spark_locals_without_parens = [
   create_accept: 1,
   data_layer_can_add_money?: 1,
   destroy_balances?: 1,
+  entry_resource: 1,
   money_composite_type?: 1,
   open_action_accept: 1,
   pre_check_identities_with: 1,
+  transaction_resource: 1,
   transfer_resource: 1
 ]
 
