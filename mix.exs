@@ -181,9 +181,6 @@ defmodule AshDoubleEntry.MixProject do
 
       version when is_binary(version) ->
         "~> #{version}"
-
-      version ->
-        version
     end
   end
 end
