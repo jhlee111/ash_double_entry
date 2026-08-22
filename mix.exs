@@ -5,7 +5,7 @@
 defmodule AshDoubleEntry.MixProject do
   use Mix.Project
 
-  @version "1.0.17"
+  @version "1.0.18"
   @description """
   A customizable double entry bookkeeping system backed by Ash resources.
   """
@@ -160,7 +160,7 @@ defmodule AshDoubleEntry.MixProject do
     [
       {:ash, ash_version("~> 3.0 and >= 3.5.4")},
       {:ash_money, "~> 0.1"},
-      {:ex_money_sql, "~> 1.10"},
+      {:ex_money_sql, "~> 1.10 or ~> 2.0"},
       # dev/test dependencies
       {:ash_postgres, "~> 2.6 and >= 2.6.21", only: [:dev, :test]},
       {:igniter, "~> 0.5", only: [:dev, :test]},
