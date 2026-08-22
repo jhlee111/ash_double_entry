@@ -16,7 +16,13 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
       changeset.resource
       |> Ash.Query.filter(id == ^original_id)
       |> Ash.Query.load(:entries)
-      |> Ash.read_one!(Ash.Context.to_opts(context, authorize?: false, domain: changeset.domain))
+      |> Ash.Query.set_context(%{private: %{internal?: true}})
+      |> Ash.read_one!(
+        Ash.Context.to_opts(context,
+          authorize?: authorize?(changeset.domain),
+          domain: changeset.domain
+        )
+      )
 
     case original do
       nil ->
@@ -52,4 +58,11 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
 
   defp flip_side(:debit), do: :credit
   defp flip_side(:credit), do: :debit
+
+  # Mirrors `VerifyTransfer`: on a domain configured `authorize :always` the
+  # application has asked for authorization to run, and Ash refuses a bare
+  # `authorize?: false` there outright (DomainRequiresAuthorization). Everywhere
+  # else — `:by_default`, the ordinary case — the extension's own bookkeeping
+  # calls bypass, exactly as they always have.
+  defp authorize?(domain), do: Ash.Domain.Info.authorize(domain) == :always
 end

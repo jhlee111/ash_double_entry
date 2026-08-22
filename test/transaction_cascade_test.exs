@@ -611,6 +611,109 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
     end
   end
 
+  describe "a domain configured `authorize :always` (#3)" do
+    # Every call the extension makes on its own behalf — the account lock, the
+    # cascaded Entry creates, the Balance upsert and shift, the reverse read —
+    # runs with `authorize?: false`. On an `authorize :always` domain Ash raises
+    # DomainRequiresAuthorization for that unless the query or changeset is
+    # marked internal (`context.private.internal?`, Ash.Actions.Helpers). Before
+    # this fix nothing was, so `post` could not run at all on such a domain.
+    #
+    # These use the parallel Strict* resources: Ash resolves the domain from the
+    # resource before the `:domain` option, so passing `domain:` at an ordinary
+    # test resource is ignored and the test proves nothing.
+    alias AshDoubleEntry.Test.{StrictAccount, StrictDomain, StrictEntry, StrictTransaction}
+
+    defp strict_account(identifier) do
+      StrictAccount
+      |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"})
+      |> Ash.create!(authorize?: true)
+    end
+
+    test "control: the domain really is strict", ctx do
+      _ = ctx
+
+      assert_raise Ash.Error.Forbidden.DomainRequiresAuthorization, fn ->
+        StrictAccount |> Ash.Query.new() |> Ash.read!(authorize?: false)
+      end
+    end
+
+    test "Transaction.post still posts", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict")
+      revenue = strict_account("revenue_strict")
+
+      assert {:ok, txn} =
+               StrictTransaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.create(authorize?: true)
+
+      entries =
+        StrictEntry
+        |> Ash.Query.filter(transaction_id == ^txn.id)
+        |> Ash.read!(authorize?: true)
+
+      assert length(entries) == 2
+    end
+
+    test "Transaction.reverse still posts", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict_r")
+      revenue = strict_account("revenue_strict_r")
+
+      {:ok, original} =
+        StrictTransaction
+        |> Ash.Changeset.for_create(:post, %{
+          entries: [
+            %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+            %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+          ]
+        })
+        |> Ash.create(authorize?: true)
+
+      assert {:ok, reversal} =
+               StrictTransaction
+               |> Ash.Changeset.for_create(:reverse, %{original_transaction_id: original.id})
+               |> Ash.create(authorize?: true)
+
+      assert reversal.reverses_transaction_id == original.id
+      assert StrictDomain
+    end
+  end
+
+  describe "skip_balance_updates reaches the cascaded entries (#8)" do
+    # The escape hatch for bulk imports: set it on the changeset context and the
+    # Balance cascade is skipped. On the Transfer path it has always worked. On
+    # the Transaction path the flag never reached the Entry changesets — Ash
+    # hands managed children only the `:shared` part of the parent's context —
+    # so entries were created WITH balance updates, silently.
+    test "no Balance rows are written, the entries still are", ctx do
+      _ = ctx
+      cash = account("cash_skip")
+      revenue = account("revenue_skip")
+      balances_before = count(Balance)
+
+      assert {:ok, txn} =
+               Transaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.Changeset.set_context(%{ash_double_entry: %{skip_balance_updates: true}})
+               |> Ash.create()
+
+      assert txn |> Ash.load!(:entries) |> Map.get(:entries) |> length() == 2
+      assert count(Balance) == balances_before, "balance rows were written despite the flag"
+    end
+  end
+
   describe "reversal" do
     test "a reversal carries the original legs' application-defined fields" do
       cash = account("cash_rv1")

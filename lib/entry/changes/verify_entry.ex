@@ -45,11 +45,14 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
         [account] =
           account_resource
           |> Ash.Query.filter(id == ^result.account_id)
-          |> Ash.Query.set_context(%{ash_double_entry?: true})
+          |> Ash.Query.set_context(%{ash_double_entry?: true, private: %{internal?: true}})
           |> Ash.Query.for_read(
             :lock_accounts,
             %{},
-            Ash.Context.to_opts(context, authorize?: false, domain: changeset.domain)
+            Ash.Context.to_opts(context,
+              authorize?: authorize?(changeset.domain),
+              domain: changeset.domain
+            )
           )
           |> Ash.Query.load(balance_as_of_ulid: %{ulid: result.id})
           |> Ash.read!()
@@ -71,7 +74,8 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
           :upsert_balance,
           Ash.Context.to_opts(context,
             domain: changeset.domain,
-            authorize?: false,
+            authorize?: authorize?(changeset.domain),
+            context: %{private: %{internal?: true}},
             upsert_fields: [:balance],
             return_errors?: true,
             stop_on_error?: true
@@ -92,7 +96,8 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
               },
               Ash.Context.to_opts(context,
                 domain: changeset.domain,
-                authorize?: false,
+                authorize?: authorize?(changeset.domain),
+                context: %{private: %{internal?: true}},
                 strategy: [:atomic, :stream, :atomic_batches],
                 return_errors?: true,
                 stop_on_error?: true
@@ -109,4 +114,11 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
       end)
     end
   end
+
+  # Mirrors `VerifyTransfer`: on a domain configured `authorize :always` the
+  # application has asked for authorization to run, and Ash refuses a bare
+  # `authorize?: false` there outright (DomainRequiresAuthorization). Everywhere
+  # else — `:by_default`, the ordinary case — the extension's own bookkeeping
+  # calls bypass, exactly as they always have.
+  defp authorize?(domain), do: Ash.Domain.Info.authorize(domain) == :always
 end
