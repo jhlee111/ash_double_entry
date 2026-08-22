@@ -6,19 +6,19 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   @moduledoc false
   # Validates Σ debits == Σ credits per currency, then cascades Entry creation.
   use Ash.Resource.Change
-  require Ash.Query
 
-  def change(changeset, _opts, context) do
+  def change(changeset, _opts, _context) do
     entries = Ash.Changeset.get_argument(changeset, :entries) || []
 
-    case validate_entries(entries) do
-      :ok ->
-        Ash.Changeset.after_action(changeset, fn _changeset, transaction ->
-          cascade_entries(transaction, entries, changeset.resource, changeset.domain, context)
-        end)
+    entry_resource =
+      AshDoubleEntry.Transaction.Info.transaction_entry_resource!(changeset.resource)
 
-      {:error, msg} ->
-        Ash.Changeset.add_error(changeset, message: msg)
+    with :ok <- validate_entries(entries),
+         %{valid?: true} = changeset <- validate_entry_inputs(changeset, entries, entry_resource) do
+      cascade_entries(changeset, entries, entry_resource)
+    else
+      {:error, msg} -> Ash.Changeset.add_error(changeset, message: msg)
+      %Ash.Changeset{} = changeset -> changeset
     end
   end
 
@@ -26,8 +26,26 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   defp validate_entries([_]), do: {:error, "Transaction must have at least 2 entries"}
 
   defp validate_entries(entries) do
-    with :ok <- validate_currency(entries) do
+    with :ok <- validate_shape(entries),
+         :ok <- validate_currency(entries) do
       validate_balance(entries)
+    end
+  end
+
+  # `side` and `amount` are read by the balance check below. Without this a leg
+  # missing either one crashed with a FunctionClauseError, and — worse — a leg whose
+  # side was neither debit nor credit fell out of both sums, so `validate_balance/1`
+  # saw 0 == 0 and passed a journal that does not balance.
+  defp validate_shape(entries) do
+    cond do
+      not Enum.all?(entries, &(entry_side(&1) in [:debit, :credit])) ->
+        {:error, "Every entry must have a side of :debit or :credit"}
+
+      not Enum.all?(entries, &match?(%Money{}, entry_amount(&1))) ->
+        {:error, "Every entry must have a Money amount"}
+
+      true ->
+        :ok
     end
   end
 
@@ -42,9 +60,6 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
       _ -> {:error, "All entries in a Transaction must share currency"}
     end
   end
-
-  defp entry_currency(%{amount: %Money{} = m}), do: m.currency
-  defp entry_currency(%{"amount" => %Money{} = m}), do: m.currency
 
   defp validate_balance(entries) do
     currency = entries |> List.first() |> entry_currency()
@@ -68,42 +83,160 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     end
   end
 
-  defp entry_side(%{side: side}), do: side
-  defp entry_side(%{"side" => side}) when is_binary(side), do: String.to_atom(side)
-  defp entry_side(%{"side" => side}) when is_atom(side), do: side
+  # Ash cannot reject a misspelled key on an entry map for us. The managed
+  # relationship narrows each leg with `Map.take/2` against the Entry `:create`
+  # action's inputs and then passes `skip_unknown_inputs`, so an unrecognised key is
+  # discarded before a child changeset exists and there is no error to raise. A typo
+  # in an app-defined field would post successfully with that field left NULL.
+  defp validate_entry_inputs(changeset, entries, entry_resource) do
+    inputs = AshDoubleEntry.Entry.Info.entry_create_inputs(entry_resource)
+
+    owned =
+      AshDoubleEntry.Entry.Info.owned_fields()
+      |> Enum.flat_map(&[&1, Atom.to_string(&1)])
+
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce(changeset, fn {entry, index}, changeset ->
+      Enum.reduce(caller_keys(entry), changeset, fn key, changeset ->
+        cond do
+          key in owned ->
+            Ash.Changeset.add_error(
+              changeset,
+              Ash.Error.Changes.InvalidAttribute.exception(
+                field: key,
+                message: "is derived from the transaction and cannot be set on an entry"
+              ),
+              [:entries, index]
+            )
+
+          MapSet.member?(inputs, key) ->
+            changeset
+
+          true ->
+            Ash.Changeset.add_error(
+              changeset,
+              Ash.Error.Invalid.NoSuchInput.exception(
+                resource: entry_resource,
+                action: :create,
+                input: key,
+                inputs: inputs
+              ),
+              [:entries, index]
+            )
+        end
+      end)
+    end)
+  end
+
+  # A leg given as an Entry struct carries the resource's own field names, not
+  # caller-authored keys — there is nothing to misspell, so there is nothing to check.
+  defp caller_keys(%_{}), do: []
+  defp caller_keys(entry) when is_map(entry), do: Map.keys(entry)
+
+  defp cascade_entries(changeset, entries, entry_resource) do
+    app_fields = AshDoubleEntry.Entry.Info.entry_app_fields(entry_resource)
+
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      # Read `posted_at` here rather than at change time. Function defaults are
+      # applied by `Ash.Changeset.set_defaults(:create, true)` on the way into the
+      # action, which runs after changes but before before_action hooks — at change
+      # time `posted_at` is still nil unless the caller supplied one.
+      posted_at = Ash.Changeset.get_attribute(changeset, :posted_at)
+      inputs = Enum.map(entries, &entry_input(&1, posted_at, app_fields))
+
+      changeset
+      |> Ash.Changeset.manage_relationship(:entries, inputs,
+        type: :create,
+        # Name the action rather than leaning on `type: :create`'s default of the
+        # PRIMARY create action — the Entry transformer adds `:create` with
+        # `add_new_action/4`, which does not mark it primary.
+        on_no_match: {:create, :create},
+        on_lookup: :ignore,
+        on_match: :ignore,
+        on_missing: :ignore,
+        authorize?: false,
+        # Sets only the head of the error path, leaving Ash's leg index in place.
+        # `error_path:` would REPLACE the whole path and destroy that index.
+        meta: [id: :entries]
+      )
+      |> Ash.Changeset.after_action(&verify_posted_at(&1, &2, posted_at))
+    end)
+  end
+
+  # Build a fresh plain map. Never merge onto the caller's value: a leg given as an
+  # Entry struct would stay a struct, and Ash's managed-relationship create
+  # short-circuits on `is_struct(input, destination)` — returning `:ok` having
+  # written no Entry row and no Balance row at all, for a Transaction that has
+  # already asserted it balances.
+  defp entry_input(entry, posted_at, app_fields) do
+    app_fields
+    |> Enum.reduce(%{}, fn field, input ->
+      case fetch_field(entry, field) do
+        {:ok, %Ash.NotLoaded{}} -> input
+        {:ok, value} -> Map.put(input, field, value)
+        :error -> input
+      end
+    end)
+    |> Map.merge(%{
+      account_id: entry_account_id(entry),
+      side: entry_side(entry),
+      amount: entry_amount(entry),
+      timestamp: posted_at
+    })
+  end
+
+  defp fetch_field(entry, field) do
+    case Map.fetch(entry, field) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(entry, Atom.to_string(field))
+    end
+  end
+
+  # `posted_at` stamps every cascaded Entry's `:timestamp`, and `VerifyEntry` turns
+  # that into the Entry ULID that `balance_as_of_ulid` and `shift_balances_after`
+  # order by. If anything moved `posted_at` after the cascade was built, the row and
+  # its own legs disagree about when the journal happened, and `balance_as_of`
+  # silently returns the wrong number for every date in between. Roll back instead.
+  defp verify_posted_at(_changeset, %{posted_at: posted_at} = transaction, posted_at) do
+    {:ok, transaction}
+  end
+
+  defp verify_posted_at(_changeset, transaction, posted_at) do
+    {:error,
+     Ash.Error.Changes.InvalidAttribute.exception(
+       field: :posted_at,
+       message:
+         "moved after entries were cascaded — entries are stamped #{inspect(posted_at)} but " <>
+           "the transaction persisted #{inspect(transaction.posted_at)}. posted_at must not " <>
+           "be changed after AshDoubleEntry's transaction change has run."
+     )}
+  end
+
+  # Total functions over both atom- and string-keyed entry maps, and over Entry
+  # structs. No `String.to_atom/1` on caller-supplied data.
+  defp entry_side(%{side: side}), do: normalize_side(side)
+  defp entry_side(%{"side" => side}), do: normalize_side(side)
+  defp entry_side(_), do: nil
+
+  defp normalize_side(:debit), do: :debit
+  defp normalize_side(:credit), do: :credit
+  defp normalize_side("debit"), do: :debit
+  defp normalize_side("credit"), do: :credit
+  defp normalize_side(_), do: nil
 
   defp entry_amount(%{amount: amount}), do: amount
   defp entry_amount(%{"amount" => amount}), do: amount
+  defp entry_amount(_), do: nil
 
-  defp cascade_entries(transaction, entries, transaction_resource, domain, context) do
-    entry_resource =
-      AshDoubleEntry.Transaction.Info.transaction_entry_resource!(transaction_resource)
-
-    entry_inputs =
-      Enum.map(entries, fn e ->
-        %{
-          transaction_id: transaction.id,
-          account_id: Map.get(e, :account_id) || Map.get(e, "account_id"),
-          side: entry_side(e),
-          amount: entry_amount(e),
-          timestamp: transaction.posted_at
-        }
-      end)
-
-    Ash.bulk_create(
-      entry_inputs,
-      entry_resource,
-      :create,
-      Ash.Context.to_opts(context,
-        domain: domain,
-        authorize?: false,
-        return_errors?: true,
-        stop_on_error?: true
-      )
-    )
-    |> case do
-      %Ash.BulkResult{status: :success} -> {:ok, transaction}
-      %Ash.BulkResult{errors: errors} -> {:error, errors}
+  defp entry_currency(entry) do
+    case entry_amount(entry) do
+      %Money{currency: currency} -> currency
+      _ -> nil
     end
   end
+
+  defp entry_account_id(%{account_id: account_id}), do: account_id
+  defp entry_account_id(%{"account_id" => account_id}), do: account_id
+  defp entry_account_id(_), do: nil
 end

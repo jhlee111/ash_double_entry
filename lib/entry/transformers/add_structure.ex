@@ -52,7 +52,9 @@ defmodule AshDoubleEntry.Entry.Transformers.AddStructure do
       source_attribute: :account_id
     )
     |> Ash.Resource.Builder.add_new_action(:create, :create,
-      accept: [:transaction_id, :account_id, :side, :amount, :timestamp]
+      accept:
+        [:transaction_id, :account_id, :side, :amount, :timestamp] ++
+          AshDoubleEntry.Entry.Info.entry_create_accept!(dsl)
     )
     |> Ash.Resource.Builder.add_change({AshDoubleEntry.Entry.Changes.VerifyEntry, []},
       only_when_valid?: true,

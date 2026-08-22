@@ -11,11 +11,21 @@ defmodule AshDoubleEntry.Test.Entry do
 
   postgres do
     table "entries"
-    repo AshDoubleEntry.Test.Repo
+    repo(AshDoubleEntry.Test.Repo)
   end
 
   entry do
     account_resource AshDoubleEntry.Test.Account
     transaction_resource AshDoubleEntry.Test.Transaction
+    create_accept [:line_item_id]
+  end
+
+  attributes do
+    # An application-defined dimension hung off an individual leg of a journal.
+    attribute :line_item_id, :string, allow_nil?: true, public?: true
+
+    # An app attribute deliberately left OUT of `create_accept`, to pin that the
+    # accept list — not merely "is it an attribute?" — is the boundary.
+    attribute :internal_note, :string, allow_nil?: true, public?: true
   end
 end
