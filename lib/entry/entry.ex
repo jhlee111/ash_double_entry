@@ -7,7 +7,13 @@ defmodule AshDoubleEntry.Entry do
   An extension for ledger entries (debit / credit lines belonging to a Transaction).
 
   Entries are created via `Transaction.post`, never directly. Each Entry
-  records `side :: :debit | :credit` and a positive `amount`.
+  records `side :: :debit | :credit` and a non-negative `amount`.
+
+  The sign lives in `side`, never in `amount` — a negative amount would put it
+  in both places at once, and `Transaction.post` refuses one. Zero is allowed.
+  (Red-ink / Storno reversal, where a −100 debit returns an account's turnover
+  figure to zero instead of showing 100 on each side, is a real practice but
+  not expressible by negating `amount` here; it would need its own marker.)
   """
 
   @entry %Spark.Dsl.Section{

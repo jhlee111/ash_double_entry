@@ -821,6 +821,91 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
     end
   end
 
+  describe "amounts carry magnitude, not sign (#6)" do
+    # D2 puts the sign in `side`, never in `amount` — `Money.mult!(amount, -1)`
+    # in VerifyEntry and `flip_side/1` in ReverseTransaction both depend on it.
+    # A negative amount overloads the two, so it is refused. Zero is allowed:
+    # it is a magnitude, and a zero-valued leg is an ordinary shape.
+    test "two negative legs no longer balance their way through", ctx do
+      _ = ctx
+      cash = account("cash_neg1")
+      revenue = account("revenue_neg1")
+
+      # Sigma-debits == Sigma-credits == -10.00, so the balance check alone
+      # passes. VerifyEntry would then drive the cash account to -10.00: a
+      # negative debit is an undeclared credit.
+      result =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "-10.00")},
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "-10.00")}
+        ])
+
+      assert {:error, _} = result
+      assert count(Transaction) == 0
+      assert count(Entry) == 0
+    end
+
+    test "a single negative leg is refused at its own index", ctx do
+      _ = ctx
+      cash = account("cash_neg2")
+      revenue = account("revenue_neg2")
+      tax = account("tax_neg2")
+
+      result =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "12.00")},
+          %{account_id: tax.id, side: :credit, amount: Money.new!(:USD, "-2.00")}
+        ])
+
+      assert {:error, _} = result
+
+      assert Enum.any?(leaf_summaries(result), fn {_mod, field, _input, path} ->
+               field == :amount and path == [:entries, 2]
+             end),
+             "expected a leaf at [:entries, 2]; got #{inspect(leaf_summaries(result))}"
+    end
+
+    test "a zero-amount leg posts — zero is a magnitude", ctx do
+      _ = ctx
+      cash = account("cash_zero")
+      revenue = account("revenue_zero")
+      comp = account("comp_zero")
+
+      assert {:ok, txn} =
+               post([
+                 %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                 %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")},
+                 %{account_id: comp.id, side: :credit, amount: Money.new!(:USD, "0.00")}
+               ])
+
+      assert txn |> Ash.load!(:entries) |> Map.get(:entries) |> length() == 3
+    end
+
+    test "a reversal of a zero-amount leg still balances", ctx do
+      _ = ctx
+      cash = account("cash_zrev")
+      revenue = account("revenue_zrev")
+      comp = account("comp_zrev")
+
+      {:ok, original} =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: comp.id, side: :credit, amount: Money.new!(:USD, "0.00")}
+        ])
+
+      # Reversal flips sides rather than negating amounts (D5), so a zero leg
+      # comes back as a zero leg — it must not become a negative one.
+      assert {:ok, reversal} =
+               Transaction
+               |> Ash.Changeset.for_create(:reverse, %{original_transaction_id: original.id})
+               |> Ash.create()
+
+      assert reversal |> Ash.load!(:entries) |> Map.get(:entries) |> length() == 3
+    end
+  end
+
   describe "reversal" do
     test "a reversal carries the original legs' application-defined fields" do
       cash = account("cash_rv1")

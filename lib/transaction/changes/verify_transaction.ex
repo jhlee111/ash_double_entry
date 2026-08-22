@@ -15,6 +15,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
       AshDoubleEntry.Transaction.Info.transaction_entry_resource!(changeset.resource)
 
     with :ok <- validate_entries(entries),
+         %{valid?: true} = changeset <- validate_leg_amounts(changeset, entries),
          %{valid?: true} = changeset <- validate_entry_inputs(changeset, entries, entry_resource) do
       cascade_entries(changeset, entries, entry_resource)
     else
@@ -82,6 +83,53 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
       {:error,
        "Transaction unbalanced: debits=#{inspect(debit_total)}, credits=#{inspect(credit_total)}"}
     end
+  end
+
+  # An `amount` carries magnitude; the sign lives in `side` (design D2), and the
+  # rest of the extension depends on that — `VerifyEntry` derives a credit's
+  # balance delta with `Money.mult!(amount, -1)`, and a reversal flips `side`
+  # rather than negating (D5). A negative amount puts the sign in both places at
+  # once: `side: :debit, amount: -10` moves the account the way a credit does,
+  # so a caller permitted only to debit an account can credit it by flipping a
+  # sign. Two negative legs also satisfy `validate_balance/1` (−10 == −10) and
+  # post a journal that reads as balanced.
+  #
+  # Zero is allowed. It is a magnitude like any other, a zero-valued leg is an
+  # ordinary shape, and a reversal of one has to stay zero rather than become
+  # negative.
+  #
+  # This is NOT a claim that ledgers never carry negative postings. Red-ink /
+  # Storno reversal — posting −100 to the debit side rather than +100 to the
+  # credit side, so the account's turnover figure returns to zero instead of
+  # showing 100 on each side — is a real practice, and statutory in some
+  # jurisdictions. It is simply not expressible by negating `amount` in a model
+  # where the sign already lives in `side`: the effect on the balance is
+  # identical to the opposite-side posting, and only the turnover reporting
+  # differs. If this extension ever needs it, the shape is an explicit marker on
+  # the Entry that the balance and turnover calculations can read separately —
+  # not a second, overloaded meaning for the sign.
+  defp validate_leg_amounts(changeset, entries) do
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce(changeset, fn {entry, index}, changeset ->
+      amount = entry_amount(entry)
+
+      if match?(%Money{}, amount) and Money.negative?(amount) do
+        Ash.Changeset.add_error(
+          changeset,
+          Ash.Error.Changes.InvalidAttribute.exception(
+            field: :amount,
+            value: amount,
+            message:
+              "must not be negative — an entry's amount is a magnitude and its sign is `side` " <>
+                "(a negative debit is an undeclared credit)"
+          ),
+          [:entries, index]
+        )
+      else
+        changeset
+      end
+    end)
   end
 
   # Ash cannot reject a misspelled key on an entry map for us. The managed
