@@ -22,9 +22,14 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 - `mix ash_double_entry.gen.multi_leg_migration` generator — creates `transactions` + `entries` tables.
 - New tutorial: `documentation/tutorials/multi-leg-journal-entries.md`.
 - Pointer in getting-started tutorial to the multi-leg tutorial.
+- `entry.create_accept` — additional attributes accepted when an Entry is created, carried through from the corresponding entry map given to `Transaction.post` and copied off the original's legs by `Transaction.reverse`. Lets an application hang its own dimensions (a line item id, a cost centre) off individual legs of a journal. These attributes are written with authorization bypassed, the same as every other field of a cascaded Entry.
 
 ### Changed
-- (None — fully additive. Existing `Transfer` API and behavior unchanged.)
+- Existing `Transfer` API and behavior unchanged. Within the (unreleased) multi-leg feature, `Transaction.post` changed in four observable ways:
+  - A key on an entry map that the Entry `:create` action does not accept is now rejected, reported at that leg's own index, instead of being silently discarded. This includes `timestamp` and `transaction_id`, which are derived from the transaction and were previously ignored or overridden without comment.
+  - Per-leg errors are now pathed `[:entries, index]`. They were previously `[index]` for changeset failures and `[]` — no index at all — for database-constraint failures.
+  - `entries` comes back loaded on the `:post` result rather than `%Ash.NotLoaded{}`. The order is Ash's and is not a documented guarantee; do not depend on it.
+  - An entry map missing `amount`, or carrying a `side` that is neither debit nor credit, is now a validation error. Previously the first raised a `FunctionClauseError` and the second fell out of both sides of the balance check, so an unbalanced journal could post.
 
 ## [v1.0.17](https://github.com/ash-project/ash_double_entry/compare/v1.0.16...v1.0.17) (2026-04-12)
 

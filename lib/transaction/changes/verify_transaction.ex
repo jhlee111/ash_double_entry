@@ -156,8 +156,11 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
         on_match: :ignore,
         on_missing: :ignore,
         authorize?: false,
-        # Sets only the head of the error path, leaving Ash's leg index in place.
-        # `error_path:` would REPLACE the whole path and destroy that index.
+        # Ash builds the path as `opts[:error_path] || [opts[:meta][:id] || relationship.name,
+        # index]`. `meta[:id]` and the relationship name are both `:entries` today, so this
+        # is a no-op — it is here to hold the path steady if the relationship is renamed.
+        # `error_path:` is emphatically NOT the option to reach for: it REPLACES the whole
+        # path, collapsing every failing leg to `[:entries]` and destroying the index.
         meta: [id: :entries]
       )
       |> Ash.Changeset.after_action(&verify_posted_at(&1, &2, posted_at))

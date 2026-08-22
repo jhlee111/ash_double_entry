@@ -7,7 +7,22 @@ defmodule AshDoubleEntry.Test.Entry do
   use Ash.Resource,
     domain: AshDoubleEntry.Test.Domain,
     data_layer: AshPostgres.DataLayer,
-    extensions: [AshDoubleEntry.Entry]
+    extensions: [AshDoubleEntry.Entry],
+    authorizers: [Ash.Policy.Authorizer]
+
+  # Entries are created only by the Transaction cascade, which runs with authorization
+  # bypassed outright. These policies pin that: if the bypass were ever removed, every
+  # posting test in this suite would start failing rather than the behaviour changing
+  # quietly under a feature that hands caller-supplied values to Entry :create.
+  policies do
+    policy action_type(:create) do
+      forbid_if always()
+    end
+
+    policy action_type(:read) do
+      authorize_if always()
+    end
+  end
 
   postgres do
     table "entries"
