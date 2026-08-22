@@ -16,22 +16,33 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
       changeset.resource
       |> Ash.Query.filter(id == ^original_id)
       |> Ash.Query.load(:entries)
-      |> Ash.read_one!(
-        Ash.Context.to_opts(context, authorize?: false, domain: changeset.domain)
-      )
+      |> Ash.read_one!(Ash.Context.to_opts(context, authorize?: false, domain: changeset.domain))
 
     case original do
       nil ->
         Ash.Changeset.add_error(changeset, message: "original transaction not found")
 
       %{entries: entries} ->
+        # Carry the original legs' application-defined fields onto the reversing
+        # legs. A reversal mirrors the journal it reverses, so a leg that credited
+        # one order line has to debit that same line — without this, an application
+        # can tell which line a charge belonged to but not which line a refund
+        # cancelled, which is the whole reason for hanging a dimension off a leg.
+        app_fields =
+          changeset.resource
+          |> AshDoubleEntry.Transaction.Info.transaction_entry_resource!()
+          |> AshDoubleEntry.Entry.Info.entry_app_fields()
+
         flipped_entries =
           Enum.map(entries, fn e ->
-            %{
+            e
+            |> Map.take(app_fields)
+            |> Map.reject(fn {_field, value} -> match?(%Ash.NotLoaded{}, value) end)
+            |> Map.merge(%{
               account_id: e.account_id,
               side: flip_side(e.side),
               amount: e.amount
-            }
+            })
           end)
 
         changeset
