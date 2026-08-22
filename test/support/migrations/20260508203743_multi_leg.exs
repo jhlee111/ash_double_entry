@@ -47,7 +47,9 @@ defmodule AshDoubleEntry.Test.Repo.Migrations.MultiLeg do
           column: :id,
           name: "entries_transaction_id_fkey",
           type: :binary
-        ), null: false)
+        ),
+        null: false
+      )
 
       add(
         :account_id,

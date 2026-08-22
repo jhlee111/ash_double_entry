@@ -14,6 +14,8 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
 
   alias AshDoubleEntry.Test.{Account, Balance, Entry, Transaction}
 
+  require Ash.Query
+
   defp account(identifier) do
     Account
     |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"})
@@ -150,6 +152,30 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
       assert count(Entry) == 0
     end
 
+    test "a misspelled key is rejected under a string spelling too" do
+      cash = account("cash_af6")
+      revenue = account("revenue_af6")
+
+      result =
+        post([
+          %{"account_id" => cash.id, "side" => "debit", "amount" => Money.new!(:USD, "10.00")},
+          %{
+            "account_id" => revenue.id,
+            "side" => "credit",
+            "amount" => Money.new!(:USD, "10.00"),
+            "line_itm_id" => "typo"
+          }
+        ])
+
+      assert {:error, _} = result
+
+      assert {Ash.Error.Invalid.NoSuchInput, nil, "line_itm_id", [:entries, 1]} in leaf_summaries(
+               result
+             )
+
+      assert count(Entry) == 0
+    end
+
     test "a transaction-owned field supplied on a leg is rejected, not silently overridden" do
       cash = account("cash_af5")
       revenue = account("revenue_af5")
@@ -182,6 +208,52 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
     end
   end
 
+  describe "fields the transaction owns" do
+    setup do
+      %{cash: account("cash_own"), revenue: account("revenue_own")}
+    end
+
+    # `timestamp` is derived from the transaction's posted_at. Silently overriding a
+    # caller's value would be the same silent-discard this change exists to remove.
+    test "a per-leg timestamp is rejected rather than overridden", %{cash: cash, revenue: revenue} do
+      result =
+        post([
+          %{
+            account_id: cash.id,
+            side: :debit,
+            amount: Money.new!(:USD, "10.00"),
+            timestamp: ~U[2001-01-01 00:00:00.000000Z]
+          },
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      assert {:error, _} = result
+
+      assert Enum.any?(leaf_summaries(result), fn {_mod, field, _input, path} ->
+               field == :timestamp and path == [:entries, 0]
+             end)
+    end
+
+    test "and is rejected under its string spelling too", %{cash: cash, revenue: revenue} do
+      result =
+        post([
+          %{"account_id" => cash.id, "side" => "debit", "amount" => Money.new!(:USD, "10.00")},
+          %{
+            "account_id" => revenue.id,
+            "side" => "credit",
+            "amount" => Money.new!(:USD, "10.00"),
+            "transaction_id" => "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+          }
+        ])
+
+      assert {:error, _} = result
+
+      assert Enum.any?(leaf_summaries(result), fn {_mod, field, _input, path} ->
+               field == "transaction_id" and path == [:entries, 1]
+             end)
+    end
+  end
+
   describe "cascade integrity" do
     test "legs given as Entry structs create real Entry rows" do
       # The copy-a-journal shape: load a posted transaction's legs and post them
@@ -211,6 +283,37 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
 
       cash = Ash.load!(cash, :balance_as_of)
       assert Money.equal?(cash.balance_as_of, Money.new!(:USD, "20.00"))
+    end
+
+    test "legs read with a restricted select post again without their unselected fields" do
+      # Attributes left out of a select come back as %Ash.NotLoaded{}, which is not a
+      # value any Entry attribute would accept. They have to be dropped, not forwarded.
+      cash = account("cash_ci5")
+      revenue = account("revenue_ci5")
+
+      {:ok, first} =
+        post([
+          %{
+            account_id: cash.id,
+            side: :debit,
+            amount: Money.new!(:USD, "10.00"),
+            line_item_id: "li-1"
+          },
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      first =
+        Ash.load!(first,
+          entries: Ash.Query.select(Entry, [:id, :account_id, :side, :amount])
+        )
+
+      assert Enum.any?(first.entries, &match?(%Ash.NotLoaded{}, &1.line_item_id))
+
+      assert {:ok, second} = post(first.entries)
+
+      second = Ash.load!(second, :entries)
+      assert length(second.entries) == 2
+      assert Enum.all?(second.entries, &is_nil(&1.line_item_id))
     end
 
     test "a leg that fails at the database leaves no transaction, entry or balance rows" do
@@ -272,7 +375,47 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
 
       refute match?(%Ash.NotLoaded{}, transaction.entries)
 
-      assert Enum.map(transaction.entries, & &1.account_id) == [cash.id, revenue.id, tax.id]
+      # The set, not the order. Ash happens to hand these back in input order, but
+      # that falls out of a private prepend-then-reverse and is not a documented
+      # guarantee — pinning it would weld this suite to an Ash implementation detail.
+      assert transaction.entries |> Enum.map(& &1.account_id) |> Enum.sort() ==
+               Enum.sort([cash.id, revenue.id, tax.id])
+    end
+  end
+
+  describe "authorization" do
+    test "the cascade writes Entries despite a policy forbidding every Entry create" do
+      # Deliberate and documented: `entry.create_accept` says these fields are written
+      # with authorization bypassed. This pins it, so that removing the bypass is a
+      # visible change rather than a quiet one — and so that anyone widening
+      # create_accept can see exactly what they are opting into.
+      cash = account("cash_az1")
+      revenue = account("revenue_az1")
+
+      {:ok, transaction} =
+        post([
+          %{
+            account_id: cash.id,
+            side: :debit,
+            amount: Money.new!(:USD, "10.00"),
+            line_item_id: "li-1"
+          },
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      assert transaction |> Ash.load!(:entries) |> Map.get(:entries) |> length() == 2
+
+      # The same write, made directly and authorized, is refused.
+      assert {:error, %Ash.Error.Forbidden{}} =
+               Entry
+               |> Ash.Changeset.for_create(:create, %{
+                 transaction_id: transaction.id,
+                 account_id: cash.id,
+                 side: :debit,
+                 amount: Money.new!(:USD, "1.00"),
+                 timestamp: transaction.posted_at
+               })
+               |> Ash.create(authorize?: true)
     end
   end
 

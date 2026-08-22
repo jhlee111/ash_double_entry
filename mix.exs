@@ -113,12 +113,18 @@ defmodule AshDoubleEntry.MixProject do
         {"README.md", title: "Home"},
         {"documentation/tutorials/getting-started-with-ash-double-entry.md",
          title: "Get Started"},
+        {"documentation/tutorials/multi-leg-journal-entries.md",
+         title: "Multi-Leg Journal Entries"},
         {"documentation/dsls/DSL-AshDoubleEntry.Account.md",
          search_data: Spark.Docs.search_data_for(AshDoubleEntry.Account)},
         {"documentation/dsls/DSL-AshDoubleEntry.Balance.md",
          search_data: Spark.Docs.search_data_for(AshDoubleEntry.Balance)},
         {"documentation/dsls/DSL-AshDoubleEntry.Transfer.md",
          search_data: Spark.Docs.search_data_for(AshDoubleEntry.Transfer)},
+        {"documentation/dsls/DSL-AshDoubleEntry.Transaction.md",
+         search_data: Spark.Docs.search_data_for(AshDoubleEntry.Transaction)},
+        {"documentation/dsls/DSL-AshDoubleEntry.Entry.md",
+         search_data: Spark.Docs.search_data_for(AshDoubleEntry.Entry)},
         "CHANGELOG.md"
       ],
       groups_for_extras: [

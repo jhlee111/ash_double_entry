@@ -37,7 +37,6 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
           Enum.map(entries, fn e ->
             e
             |> Map.take(app_fields)
-            |> Map.reject(fn {_field, value} -> match?(%Ash.NotLoaded{}, value) end)
             |> Map.merge(%{
               account_id: e.account_id,
               side: flip_side(e.side),

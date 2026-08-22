@@ -21,6 +21,7 @@ An extension for creating a double entry ledger balance. See the getting started
 | [`transfer_resource`](#balance-transfer_resource){: #balance-transfer_resource .spark-required} | `module` |  | The resource used for transfers |
 | [`account_resource`](#balance-account_resource){: #balance-account_resource .spark-required} | `module` |  | The resource used for accounts |
 | [`pre_check_identities_with`](#balance-pre_check_identities_with){: #balance-pre_check_identities_with } | `module` |  | A domain to use to precheck generated identities. Required by certain data layers. |
+| [`entry_resource`](#balance-entry_resource){: #balance-entry_resource } | `module` |  | The Entry resource. Optional for backward compatibility with Transfer-only setups. |
 | [`money_composite_type?`](#balance-money_composite_type?){: #balance-money_composite_type? } | `boolean` | `true` | Whether the balance is stored as a composite type. |
 | [`data_layer_can_add_money?`](#balance-data_layer_can_add_money?){: #balance-data_layer_can_add_money? } | `boolean` | `true` | Whether or not the data layer supports adding money. |
 
