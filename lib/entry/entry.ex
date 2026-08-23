@@ -34,9 +34,12 @@ defmodule AshDoubleEntry.Entry do
         given to `post`, so an application can hang its own dimensions (a line item
         id, a cost centre, a memo) off individual legs of a journal.
 
-        These attributes are written with authorization bypassed, the same as every
-        other field of a cascaded Entry. Do not list an attribute here that you
-        intend to guard with an Entry policy.
+        Like every other field of a cascaded Entry, these are written under the
+        domain's authorization posture: bypassed on a `:by_default` or
+        `:when_requested` domain, authorized on an `authorize :always` domain —
+        where your Entry create policies run against the cascade itself. To allow
+        entries to be created only by `Transaction.post` on such a domain, write
+        the policy with `accessing_from(YourTransaction, :entries)`.
         """
       ]
     ]

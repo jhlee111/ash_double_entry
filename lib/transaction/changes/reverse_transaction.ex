@@ -12,11 +12,22 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
   def change(changeset, _opts, context) do
     original_id = Ash.Changeset.get_argument(changeset, :original_transaction_id)
 
+    # This read happens while the changeset is being built, not in a hook: the
+    # reversing legs have to be on the changeset before VerifyTransaction can
+    # validate them. So the caller's actor and tenant must arrive with
+    # `for_create/3` — the contract Ash gives every build-time change — whereas
+    # `post`, whose reads run in hooks, also honours them given to `Ash.create/2`.
     original =
       changeset.resource
       |> Ash.Query.filter(id == ^original_id)
       |> Ash.Query.load(:entries)
-      |> Ash.read_one!(Ash.Context.to_opts(context, authorize?: false, domain: changeset.domain))
+      |> Ash.Query.set_context(%{private: %{internal?: true}})
+      |> Ash.read_one!(
+        Ash.Context.to_opts(context,
+          authorize?: authorize?(changeset.domain),
+          domain: changeset.domain
+        )
+      )
 
     case original do
       nil ->
@@ -52,4 +63,11 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
 
   defp flip_side(:debit), do: :credit
   defp flip_side(:credit), do: :debit
+
+  # Mirrors `VerifyTransfer`: on a domain configured `authorize :always` the
+  # application has asked for authorization to run, and Ash refuses a bare
+  # `authorize?: false` there outright (DomainRequiresAuthorization). Everywhere
+  # else — `:by_default`, the ordinary case — the extension's own bookkeeping
+  # calls bypass, exactly as they always have.
+  defp authorize?(domain), do: Ash.Domain.Info.authorize(domain) == :always
 end

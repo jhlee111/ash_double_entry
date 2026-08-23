@@ -170,7 +170,9 @@ defmodule AshDoubleEntry.MixProject do
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:sobelow, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:mix_audit, ">= 0.0.0", only: [:dev, :test], runtime: false}
+      {:mix_audit, ">= 0.0.0", only: [:dev, :test], runtime: false},
+      # The strict test domain carries real policies; Ash needs a solver for them.
+      {:simple_sat, ">= 0.0.0", only: [:dev, :test]}
     ]
   end
 

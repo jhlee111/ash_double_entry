@@ -135,6 +135,28 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   defp caller_keys(%_{}), do: []
   defp caller_keys(entry) when is_map(entry), do: Map.keys(entry)
 
+  # `skip_balance_updates` is read off each Entry's own changeset by VerifyEntry,
+  # but Ash hands a managed child only the `:shared` slice of its parent's
+  # context — so a flag set the ordinary way never reached the cascaded entries
+  # and their balance rows were written anyway, silently. Re-setting it under
+  # `:shared` is what carries it down. `set_context/2` also merges `:shared`
+  # back over the top level, so the parent's own reads are unchanged, and the
+  # child sees it at the top level too — VerifyEntry needs no second lookup.
+  #
+  # It is shared SCOPED TO THE ENTRY RESOURCE, not as the bare flag: `:shared`
+  # reaches every nested action on this changeset, including a consumer-managed
+  # child the extension knows nothing about — a Transfer managed off the
+  # Transaction, say — which maintains its own balances and must keep doing so.
+  defp share_skip_balance_updates(changeset, entry_resource) do
+    if get_in(changeset.context, [:ash_double_entry, :skip_balance_updates]) do
+      Ash.Changeset.set_context(changeset, %{
+        shared: %{ash_double_entry: %{skip_balance_updates_for: entry_resource}}
+      })
+    else
+      changeset
+    end
+  end
+
   defp cascade_entries(changeset, entries, entry_resource) do
     app_fields = AshDoubleEntry.Entry.Info.entry_app_fields(entry_resource)
 
@@ -144,6 +166,12 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     id_attribute = Ash.Resource.Info.attribute(account_resource, :id)
 
     Ash.Changeset.before_action(changeset, fn changeset ->
+      # `share_skip_balance_updates/1` runs HERE, not in `change/3`: a caller
+      # sets the flag after `for_create` returns, so at change time it is not on
+      # the changeset yet. A before_action hook sees the context the caller
+      # actually assembled.
+      changeset = share_skip_balance_updates(changeset, entry_resource)
+
       # A leg's account_id is caller data. Cast it against the Account's id type
       # HERE, before it reaches a filter: a value that does not cast used to blow
       # up inside the lock query as `InvalidFilterValue`, raised out of this hook
@@ -203,11 +231,14 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     account_resource
     |> Ash.Query.filter(id in ^ids)
     |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.set_context(%{ash_double_entry?: true})
+    |> Ash.Query.set_context(%{ash_double_entry?: true, private: %{internal?: true}})
     |> Ash.Query.for_read(
       :lock_accounts,
       %{},
-      Ash.Scope.to_opts(caller_scope(changeset), authorize?: false, domain: changeset.domain)
+      Ash.Scope.to_opts(caller_scope(changeset),
+        authorize?: authorize?(changeset.domain),
+        domain: changeset.domain
+      )
     )
     |> Ash.read!()
     |> Map.new(&{&1.id, &1})
@@ -301,7 +332,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
       on_lookup: :ignore,
       on_match: :ignore,
       on_missing: :ignore,
-      authorize?: false,
+      authorize?: authorize?(changeset.domain),
       # Ash builds the path as `opts[:error_path] || [opts[:meta][:id] || relationship.name,
       # index]`. `meta[:id]` and the relationship name are both `:entries` today, so this
       # is a no-op — it is here to hold the path steady if the relationship is renamed.
@@ -387,4 +418,11 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   defp entry_account_id(%{account_id: account_id}), do: account_id
   defp entry_account_id(%{"account_id" => account_id}), do: account_id
   defp entry_account_id(_), do: nil
+
+  # Mirrors `VerifyTransfer`: on a domain configured `authorize :always` the
+  # application has asked for authorization to run, and Ash refuses a bare
+  # `authorize?: false` there outright (DomainRequiresAuthorization). Everywhere
+  # else — `:by_default`, the ordinary case — the extension's own bookkeeping
+  # calls bypass, exactly as they always have.
+  defp authorize?(domain), do: Ash.Domain.Info.authorize(domain) == :always
 end

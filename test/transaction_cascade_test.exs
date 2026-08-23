@@ -611,6 +611,216 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
     end
   end
 
+  describe "a domain configured `authorize :always` (#3)" do
+    # Every call the extension makes on its own behalf — the account lock, the
+    # cascaded Entry creates, the Balance upsert and shift, the reversal's read —
+    # runs `authorize?: authorize?(domain)`: on an `authorize :always` domain Ash
+    # refuses a bare `authorize?: false` outright (DomainRequiresAuthorization),
+    # so those calls authorize there, and bypass everywhere else, as Transfer's do.
+    #
+    # The parallel Strict* resources carry REAL policies — "you must be signed
+    # in" on Account, Transaction and Balance; Entry creation allowed only from
+    # the Transaction cascade — so these tests prove the calls run as the caller,
+    # not merely that the domain gate is passed. They have to be a parallel SET:
+    # Ash resolves the domain from the resource before the `:domain` option, so
+    # `domain:` at an ordinary test resource is ignored and proves nothing.
+    alias AshDoubleEntry.Test.{StrictAccount, StrictEntry, StrictTransaction}
+
+    @ledger %{id: "ledger-1"}
+
+    defp strict_account(identifier) do
+      StrictAccount
+      |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"})
+      |> Ash.create!(authorize?: true, actor: @ledger)
+    end
+
+    defp strict_legs(cash, revenue) do
+      [
+        %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+        %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+      ]
+    end
+
+    defp strict_post(cash, revenue, opts) do
+      StrictTransaction
+      |> Ash.Changeset.for_create(:post, %{entries: strict_legs(cash, revenue)})
+      |> Ash.create(Keyword.put(opts, :authorize?, true))
+    end
+
+    test "control: the domain really is strict", ctx do
+      _ = ctx
+
+      assert_raise Ash.Error.Forbidden.DomainRequiresAuthorization, fn ->
+        StrictAccount |> Ash.Query.new() |> Ash.read!(authorize?: false)
+      end
+    end
+
+    test "control: the policies really run — without an actor, no post", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict_anon")
+      revenue = strict_account("revenue_strict_anon")
+
+      assert {:error, %Ash.Error.Forbidden{}} = strict_post(cash, revenue, [])
+    end
+
+    test "Transaction.post posts, carrying the caller's actor into every internal call", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict")
+      revenue = strict_account("revenue_strict")
+
+      # The Account read policy needs an actor. The up-front lock is a read of
+      # Account: were it issued without the caller's actor, Ash would FILTER it
+      # to no rows and every leg would come back as "account_id does not exist"
+      # — for accounts that exist and that this very actor can read.
+      assert {:ok, txn} = strict_post(cash, revenue, actor: @ledger)
+
+      entries =
+        StrictEntry
+        |> Ash.Query.filter(transaction_id == ^txn.id)
+        |> Ash.read!(authorize?: true, actor: @ledger)
+
+      assert length(entries) == 2
+    end
+
+    test "Transaction.reverse posts too", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict_r")
+      revenue = strict_account("revenue_strict_r")
+      {:ok, original} = strict_post(cash, revenue, actor: @ledger)
+
+      # `reverse` reads the original while the changeset is being BUILT — the
+      # reversing legs have to exist before they can be validated — so the actor
+      # has to be on `for_create/3`, the contract Ash gives every build-time
+      # change. `post` does its reads in hooks and takes it on `Ash.create/2` too.
+      assert {:ok, reversal} =
+               StrictTransaction
+               |> Ash.Changeset.for_create(:reverse, %{original_transaction_id: original.id},
+                 actor: @ledger
+               )
+               |> Ash.create(authorize?: true, actor: @ledger)
+
+      assert reversal.reverses_transaction_id == original.id
+    end
+
+    test "an Entry can be created through the cascade and from nowhere else", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict_direct")
+      revenue = strict_account("revenue_strict_direct")
+      {:ok, txn} = strict_post(cash, revenue, actor: @ledger)
+
+      assert {:error, %Ash.Error.Forbidden{}} =
+               StrictEntry
+               |> Ash.Changeset.for_create(:create, %{
+                 transaction_id: txn.id,
+                 account_id: cash.id,
+                 side: :debit,
+                 amount: Money.new!(:USD, "1.00"),
+                 timestamp: txn.posted_at
+               })
+               |> Ash.create(authorize?: true, actor: @ledger)
+    end
+  end
+
+  describe "the caller's shared context reaches the Balance writes" do
+    # `Ash.Context.to_opts/2` forwards exactly the `:shared` slice of the caller's
+    # context to a nested action call — Ash documents `:shared` as the channel
+    # every nested action sees, and the Transfer path forwards it untouched.
+    # VerifyEntry passed `context:` to `to_opts` as an OVERRIDE, which replaces
+    # that slice wholesale, so a `shared` key set on `Transaction.post` reached
+    # the Entry changesets and then vanished before the Balance writes.
+    test "a shared key set on post is visible on the Balance upsert", ctx do
+      _ = ctx
+      cash = account("shared_cash")
+      revenue = account("shared_revenue")
+      Process.put(:balance_context_probe, self())
+
+      assert {:ok, _} =
+               Transaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.Changeset.set_context(%{shared: %{request_id: "req-1"}})
+               |> Ash.create()
+
+      assert_received {:balance_context, :upsert_balance, context}
+      assert context[:shared][:request_id] == "req-1"
+      # The extension's own marker must survive alongside it, not replace it.
+      assert context[:private][:internal?] == true
+    end
+  end
+
+  describe "skip_balance_updates reaches the cascaded entries (#8)" do
+    # The escape hatch for bulk imports: set it on the changeset context and the
+    # Balance cascade is skipped. On the Transfer path it has always worked. On
+    # the Transaction path the flag never reached the Entry changesets — Ash
+    # hands managed children only the `:shared` part of the parent's context —
+    # so entries were created WITH balance updates, silently.
+    test "no Balance rows are written, the entries still are", ctx do
+      _ = ctx
+      cash = account("cash_skip")
+      revenue = account("revenue_skip")
+      balances_before = count(Balance)
+
+      assert {:ok, txn} =
+               Transaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.Changeset.set_context(%{ash_double_entry: %{skip_balance_updates: true}})
+               |> Ash.create()
+
+      assert txn |> Ash.load!(:entries) |> Map.get(:entries) |> length() == 2
+      assert count(Balance) == balances_before, "balance rows were written despite the flag"
+    end
+
+    # The flag is the Transaction's escape hatch for ITS entries. Re-setting it
+    # under `:shared` hands it to every nested action on the changeset — including
+    # a consumer-managed child the extension knows nothing about. A Transfer
+    # managed as a child of the Transaction maintains its own balances and has to
+    # keep doing so.
+    test "the flag does not leak into a consumer-managed nested Transfer", ctx do
+      _ = ctx
+      cash = account("cash_skip_nested")
+      revenue = account("revenue_skip_nested")
+      balances_before = count(Balance)
+
+      assert {:ok, txn} =
+               Transaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.Changeset.set_context(%{ash_double_entry: %{skip_balance_updates: true}})
+               |> Ash.Changeset.manage_relationship(
+                 :settlements,
+                 [
+                   %{
+                     from_account_id: cash.id,
+                     to_account_id: revenue.id,
+                     amount: Money.new!(:USD, "1.00")
+                   }
+                 ],
+                 type: :create,
+                 on_no_match: {:create, :transfer}
+               )
+               |> Ash.create()
+
+      assert txn |> Ash.load!(:settlements) |> Map.get(:settlements) |> length() == 1
+
+      # The entries' balance rows were skipped; the Transfer's two were written.
+      assert count(Balance) == balances_before + 2,
+             "the nested Transfer's balance maintenance was skipped by the Transaction's flag"
+    end
+  end
+
   describe "reversal" do
     test "a reversal carries the original legs' application-defined fields" do
       cash = account("cash_rv1")
