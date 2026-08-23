@@ -143,17 +143,17 @@ if Code.ensure_loaded?(Igniter) do
     end
 
     defp create_balances(igniter, transfer, account, balance, data_layer, repo, domain) do
-      {balance_attr, can_add_money} =
+      balance_attr =
         if data_layer == AshPostgres.DataLayer do
-          {"""
-           attribute :balance, :money do
-             constraints storage_type: :money_with_currency
-           end
-           """, true}
+          """
+          attribute :balance, :money do
+            constraints storage_type: :money_with_currency
+          end
+          """
         else
-          {"""
-           attribute :balance, :money
-           """, false}
+          """
+          attribute :balance, :money
+          """
         end
 
       Igniter.Project.Module.create_module(igniter, balance, """
@@ -179,16 +179,6 @@ if Code.ensure_loaded?(Igniter) do
           accept [:balance, :account_id, :transfer_id]
           upsert? true
           upsert_identity :unique_references
-        end
-
-        update :adjust_balance do
-          argument :from_account_id, :uuid_v7, allow_nil?: false
-          argument :to_account_id, :uuid_v7, allow_nil?: false
-          argument :delta, :money, allow_nil?: false
-          argument :transfer_id, AshDoubleEntry.ULID, allow_nil?: false
-
-          change filter expr(account_id in [^arg(:from_account_id), ^arg(:to_account_id)] and transfer_id > ^arg(:transfer_id))
-          change {AshDoubleEntry.Balance.Changes.AdjustBalance, can_add_money?: #{can_add_money}}
         end
       end
 

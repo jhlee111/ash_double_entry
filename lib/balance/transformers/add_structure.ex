@@ -57,38 +57,12 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
       upsert?: true,
       upsert_identity: :unique_references
     )
-    |> Ash.Resource.Builder.add_new_action(:update, :adjust_balance,
-      changes: [
-        Ash.Resource.Builder.build_action_change(
-          {Ash.Resource.Change.Filter,
-           filter:
-             expr(
-               account_id in [^arg(:from_account_id), ^arg(:to_account_id)] and
-                 transfer_id > ^arg(:transfer_id)
-             )}
-        ),
-        Ash.Resource.Builder.build_action_change(
-          {AshDoubleEntry.Balance.Changes.AdjustBalance,
-           can_add_money?: AshDoubleEntry.Balance.Info.balance_data_layer_can_add_money?(dsl)}
-        )
-      ],
-      arguments: [
-        Ash.Resource.Builder.build_action_argument(:from_account_id, :uuid, allow_nil?: false),
-        Ash.Resource.Builder.build_action_argument(:to_account_id, :uuid, allow_nil?: false),
-        Ash.Resource.Builder.build_action_argument(:delta, AshMoney.Types.Money,
-          allow_nil?: false
-        ),
-        Ash.Resource.Builder.build_action_argument(:transfer_id, AshDoubleEntry.ULID,
-          allow_nil?: false
-        )
-      ]
-    )
     |> Ash.Resource.Builder.add_new_identity(:unique_references, [:account_id, :transfer_id],
       pre_check_with: pre_check_with(dsl)
     )
     |> maybe_add_entry_relationship()
     |> maybe_add_entry_identity()
-    |> maybe_add_shift_action()
+    |> add_shift_action()
     |> Ash.Resource.Builder.add_new_calculation(
       :effective_ulid,
       AshDoubleEntry.ULID,
@@ -116,42 +90,47 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
     end
   end
 
-  # A single-account, signed-delta ripple for backdated entries. Distinct from
-  # :adjust_balance, whose Transfer from/to PAIR semantics would invert the
-  # sign when reused with one account. Only added for entry-aware consumers
-  # (the filter references entry_id). The filter covers BOTH transfer-keyed
-  # and entry-keyed later rows: one account can receive both kinds.
-  defbuilder maybe_add_shift_action(dsl) do
+  # The one ripple for a write that lands before existing rows, of either kind:
+  # shift one account's LATER balance rows by a signed delta. Entries run it
+  # once; a Transfer runs it twice — minus on the source account, plus on the
+  # destination. With an entry resource configured an account's rows come in
+  # two kinds, keyed by `transfer_id` or by `entry_id`, and the filter has to
+  # compare both: a comparison on one column is NULL for rows of the other kind
+  # and silently skips them, which is exactly how Transfer's former ripple,
+  # `:adjust_balance`, left an account's latest balance stale.
+  defbuilder add_shift_action(dsl) do
+    Ash.Resource.Builder.add_new_action(dsl, :update, :shift_balances_after,
+      changes: [
+        Ash.Resource.Builder.build_action_change(
+          {Ash.Resource.Change.Filter, filter: shift_filter(dsl)}
+        ),
+        Ash.Resource.Builder.build_action_change(
+          {AshDoubleEntry.Balance.Changes.ShiftBalance,
+           can_add_money?: AshDoubleEntry.Balance.Info.balance_data_layer_can_add_money?(dsl)}
+        )
+      ],
+      arguments: [
+        Ash.Resource.Builder.build_action_argument(:account_id, :uuid, allow_nil?: false),
+        Ash.Resource.Builder.build_action_argument(:delta, AshMoney.Types.Money,
+          allow_nil?: false
+        ),
+        Ash.Resource.Builder.build_action_argument(:after_ulid, AshDoubleEntry.ULID,
+          allow_nil?: false
+        )
+      ]
+    )
+  end
+
+  defp shift_filter(dsl) do
     case AshDoubleEntry.Balance.Info.balance_entry_resource(dsl) do
       {:ok, entry_resource} when not is_nil(entry_resource) ->
-        Ash.Resource.Builder.add_new_action(dsl, :update, :shift_balances_after,
-          changes: [
-            Ash.Resource.Builder.build_action_change(
-              {Ash.Resource.Change.Filter,
-               filter:
-                 expr(
-                   account_id == ^arg(:account_id) and
-                     (transfer_id > ^arg(:after_ulid) or entry_id > ^arg(:after_ulid))
-                 )}
-            ),
-            Ash.Resource.Builder.build_action_change(
-              {AshDoubleEntry.Balance.Changes.ShiftBalance,
-               can_add_money?: AshDoubleEntry.Balance.Info.balance_data_layer_can_add_money?(dsl)}
-            )
-          ],
-          arguments: [
-            Ash.Resource.Builder.build_action_argument(:account_id, :uuid, allow_nil?: false),
-            Ash.Resource.Builder.build_action_argument(:delta, AshMoney.Types.Money,
-              allow_nil?: false
-            ),
-            Ash.Resource.Builder.build_action_argument(:after_ulid, AshDoubleEntry.ULID,
-              allow_nil?: false
-            )
-          ]
+        expr(
+          account_id == ^arg(:account_id) and
+            (transfer_id > ^arg(:after_ulid) or entry_id > ^arg(:after_ulid))
         )
 
       _ ->
-        {:ok, dsl}
+        expr(account_id == ^arg(:account_id) and transfer_id > ^arg(:after_ulid))
     end
   end
 

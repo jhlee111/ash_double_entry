@@ -4,12 +4,10 @@
 
 defmodule AshDoubleEntry.Balance.Changes.ShiftBalance do
   @moduledoc false
-  # Unconditionally shifts a balance by a signed delta. Used to ripple a
-  # backdated entry's effect through the LATER balance rows of one account.
-  #
-  # Deliberately distinct from AdjustBalance, whose Transfer from/to PAIR
-  # semantics (`account_id == from_account_id` -> subtract) would invert the
-  # sign when called with a single account.
+  # Unconditionally shifts a balance by a signed delta — the one ripple the
+  # library runs through the LATER balance rows of an account. Entries run it
+  # once with their signed delta; a Transfer runs it once per account, minus on
+  # the source and plus on the destination.
   use Ash.Resource.Change
 
   def change(changeset, _, _) do
