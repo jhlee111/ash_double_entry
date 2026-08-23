@@ -31,6 +31,11 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
   - `entries` comes back loaded on the `:post` result rather than `%Ash.NotLoaded{}`. The order is Ash's and is not a documented guarantee; do not depend on it.
   - An entry map missing `amount`, or carrying a `side` that is neither debit nor credit, is now a validation error. Previously the first raised a `FunctionClauseError` and the second fell out of both sides of the balance check, so an unbalanced journal could post.
 
+## [v1.0.18](https://github.com/ash-project/ash_double_entry/compare/v1.0.17...v1.0.18) (2026-07-13)
+
+
+
+
 ## [v1.0.17](https://github.com/ash-project/ash_double_entry/compare/v1.0.16...v1.0.17) (2026-04-12)
 
 
