@@ -645,4 +645,91 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
                Enum.sort([{:credit, "li-cash"}, {:debit, "li-rev"}])
     end
   end
+
+  describe "the up-front lock runs in the caller's context (#4 follow-up)" do
+    alias AshDoubleEntry.Test.{TenantAccount, TenantEntry, TenantTransaction}
+
+    # `VerifyTransfer` and `VerifyEntry` both build their `:lock_accounts` read with
+    # `Ash.Context.to_opts(context, ...)`, which carries the tenant (and the actor and
+    # tracer) into the extension's own reads. A multitenant consumer is entitled to
+    # the same from the up-front lock: without the tenant, Ash refuses the read
+    # outright and the multi-leg feature is simply unavailable to that application.
+    test "a journal posts under attribute multitenancy, every cascaded Entry in the caller's tenant" do
+      org = Ash.UUID.generate()
+
+      [cash, revenue] =
+        for identifier <- ["tenant_cash", "tenant_revenue"] do
+          TenantAccount
+          |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"},
+            tenant: org
+          )
+          |> Ash.create!()
+        end
+
+      assert {:ok, transaction} =
+               TenantTransaction
+               |> Ash.Changeset.for_create(
+                 :post,
+                 %{
+                   entries: [
+                     %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                     %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                   ]
+                 },
+                 tenant: org
+               )
+               |> Ash.create()
+
+      entries =
+        TenantEntry
+        |> Ash.Query.filter(transaction_id == ^transaction.id)
+        |> Ash.read!(tenant: org)
+
+      assert length(entries) == 2
+      assert Enum.all?(entries, &(&1.org_id == org))
+    end
+  end
+
+  describe "a leg's account_id must cast to the Account's id type" do
+    # Before the up-front lock, a malformed id only ever reached the Entry changeset,
+    # where Ash cast it and returned `InvalidAttribute` at the leg. Feeding the raw
+    # value into the lock's `id in ^ids` filter instead raises `InvalidFilterValue`
+    # from inside the before_action hook — a 500 with no leg index where a 422 belongs.
+    test "a malformed id is a validation error at its own leg, not a raise from the lock query" do
+      cash = account("cast_cash")
+
+      result =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: "not-a-uuid", side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      assert {:error, %Ash.Error.Invalid{}} = result
+
+      assert {Ash.Error.Changes.InvalidAttribute, :account_id, nil, [:entries, 1]} in leaf_summaries(
+               result
+             )
+
+      assert count(Transaction) == 0
+      assert count(Entry) == 0
+      assert count(Balance) == 0
+    end
+
+    test "a well-formed id that names no account is reported at its leg the same way" do
+      cash = account("cast_cash_2")
+      ghost = Ash.UUID.generate()
+
+      result =
+        post([
+          %{account_id: ghost, side: :debit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: cash.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      assert {:error, %Ash.Error.Invalid{}} = result
+
+      assert {Ash.Error.Changes.InvalidAttribute, :account_id, nil, [:entries, 0]} in leaf_summaries(
+               result
+             )
+    end
+  end
 end

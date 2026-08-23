@@ -8,7 +8,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   use Ash.Resource.Change
   require Ash.Query
 
-  def change(changeset, _opts, _context) do
+  def change(changeset, _opts, context) do
     entries = Ash.Changeset.get_argument(changeset, :entries) || []
 
     entry_resource =
@@ -16,7 +16,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
 
     with :ok <- validate_entries(entries),
          %{valid?: true} = changeset <- validate_entry_inputs(changeset, entries, entry_resource) do
-      cascade_entries(changeset, entries, entry_resource)
+      cascade_entries(changeset, entries, entry_resource, context)
     else
       {:error, msg} -> Ash.Changeset.add_error(changeset, message: msg)
       %Ash.Changeset{} = changeset -> changeset
@@ -135,22 +135,33 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   defp caller_keys(%_{}), do: []
   defp caller_keys(entry) when is_map(entry), do: Map.keys(entry)
 
-  defp cascade_entries(changeset, entries, entry_resource) do
+  defp cascade_entries(changeset, entries, entry_resource, context) do
     app_fields = AshDoubleEntry.Entry.Info.entry_app_fields(entry_resource)
 
     account_resource =
       AshDoubleEntry.Transaction.Info.transaction_account_resource!(changeset.resource)
 
+    id_attribute = Ash.Resource.Info.attribute(account_resource, :id)
+
     Ash.Changeset.before_action(changeset, fn changeset ->
+      # A leg's account_id is caller data. Cast it against the Account's id type
+      # HERE, before it reaches a filter: a value that does not cast used to blow
+      # up inside the lock query as `InvalidFilterValue`, raised out of this hook
+      # with no leg index — where the Entry changeset would have returned
+      # `InvalidAttribute` at the leg. The cast value is also what the lock
+      # result is keyed by, so an id the database matches case-insensitively is
+      # found again in the map.
+      legs = Enum.map(entries, &{&1, cast_account_id(&1, id_attribute)})
+
       # Lock every account this journal touches FIRST, in one statement, in id
       # order — the deadlock-avoidance pattern VerifyTransfer uses. VerifyEntry
       # still takes its own per-leg lock afterwards; inside the same transaction
       # that is a re-lock of a row already held, never a wait. Two concurrent
       # journals touching the same accounts in opposite leg order now queue on
       # the same first row instead of each holding one and waiting on the other.
-      accounts = lock_accounts(entries, account_resource, changeset)
+      accounts = lock_accounts(legs, account_resource, changeset, context)
 
-      case validate_legs_against_accounts(entries, accounts) do
+      case validate_legs_against_accounts(legs, accounts) do
         [] ->
           # Read `posted_at` here rather than at change time. Function defaults are
           # applied by `Ash.Changeset.set_defaults(:create, true)` on the way into the
@@ -168,14 +179,30 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     end)
   end
 
-  defp lock_accounts(entries, account_resource, changeset) do
-    ids = entries |> Enum.map(&entry_account_id/1) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+  defp cast_account_id(entry, id_attribute) do
+    case Ash.Type.cast_input(id_attribute.type, entry_account_id(entry), id_attribute.constraints) do
+      {:ok, id} -> {:ok, id}
+      _ -> :error
+    end
+  end
+
+  # The change context carries the caller's tenant, actor and tracer. Every other
+  # read the extension makes on its own behalf threads it through
+  # `Ash.Context.to_opts/2` — `VerifyTransfer` and `VerifyEntry` both do — and so
+  # must this one: without the tenant, a multitenant Account resource refuses the
+  # read outright and `post` is unavailable to that application.
+  defp lock_accounts(legs, account_resource, changeset, context) do
+    ids = for {_entry, {:ok, id}} <- legs, not is_nil(id), uniq: true, do: id
 
     account_resource
     |> Ash.Query.filter(id in ^ids)
     |> Ash.Query.sort(id: :asc)
     |> Ash.Query.set_context(%{ash_double_entry?: true})
-    |> Ash.Query.for_read(:lock_accounts, %{}, authorize?: false, domain: changeset.domain)
+    |> Ash.Query.for_read(
+      :lock_accounts,
+      %{},
+      Ash.Context.to_opts(context, authorize?: false, domain: changeset.domain)
+    )
     |> Ash.read!()
     |> Map.new(&{&1.id, &1})
   end
@@ -186,14 +213,28 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   # first as a database constraint, the second as Ash.Error.Unknown wrapping
   # Money.add!'s ArgumentError from inside VerifyEntry — and neither named the
   # leg. Now both are validation errors at `[:entries, index]`.
-  defp validate_legs_against_accounts(entries, accounts) do
-    entries
+  defp validate_legs_against_accounts(legs, accounts) do
+    legs
     |> Enum.with_index()
-    |> Enum.flat_map(fn {entry, index} ->
-      account = Map.get(accounts, entry_account_id(entry))
+    |> Enum.flat_map(fn {{entry, cast}, index} ->
+      account =
+        case cast do
+          {:ok, id} -> Map.get(accounts, id)
+          :error -> nil
+        end
+
       amount = entry_amount(entry)
 
       cond do
+        cast == :error ->
+          [
+            {Ash.Error.Changes.InvalidAttribute.exception(
+               field: :account_id,
+               value: entry_account_id(entry),
+               message: "is invalid"
+             ), [:entries, index]}
+          ]
+
         is_nil(account) ->
           [
             {Ash.Error.Changes.InvalidAttribute.exception(
