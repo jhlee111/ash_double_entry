@@ -611,17 +611,16 @@ defmodule AshDoubleEntry.BalanceConservationPropertyTest do
       # Shrunk counterexample: one Transaction, one Transfer, one account on
       # each side, no concurrency, two legs.
       #
-      #   VerifyTransfer ripples its delta through later balance rows with the
-      #   Balance `:adjust_balance` action, whose filter used to be
+      #   VerifyTransfer used to ripple its delta through later balance rows with
+      #   its own Balance `:adjust_balance` action, whose filter was
       #
       #       account_id in [^arg(:from_account_id), ^arg(:to_account_id)] and
       #         transfer_id > ^arg(:transfer_id)
       #
       #   An entry-keyed Balance row has `transfer_id IS NULL`, so
-      #   `transfer_id > ...` is NULL and the row is never selected. The Entry
-      #   path's `:shift_balances_after` covers both kinds of row
-      #   (`transfer_id > ... or entry_id > ...`); `:adjust_balance` was never
-      #   widened to match when entry-keyed rows were introduced.
+      #   `transfer_id > ...` is NULL and the row was never selected. The Entry
+      #   path's `:shift_balances_after` covered both kinds of row
+      #   (`transfer_id > ... or entry_id > ...`); `:adjust_balance` never was.
       #
       #   Result: the account's LATEST balance row stayed the stale entry-keyed
       #   one, and `balance_as_of` reported a balance short by the entire

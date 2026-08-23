@@ -168,31 +168,28 @@ defmodule AshDoubleEntry.Transfer.Changes.VerifyTransfer do
                   amount_delta
                 end
 
-              Ash.bulk_update(
-                balance_resource,
-                :adjust_balance,
-                %{
-                  from_account_id: from_account.id,
-                  to_account_id: to_account.id,
-                  transfer_id: result.id,
-                  delta: amount_delta
-                },
-                Ash.Context.to_opts(context,
-                  domain: changeset.domain,
-                  authorize?: authorize?(changeset.domain),
-                  strategy: [:atomic, :stream, :atomic_batches],
-                  return_errors?: true,
-                  stop_on_error?: true
-                )
-                |> Keyword.update(
-                  :context,
-                  %{ash_double_entry?: true},
-                  &Map.put(&1, :ash_double_entry?, true)
-                )
-              )
-              |> case do
-                %Ash.BulkResult{status: :success} -> {:ok, result}
-                %Ash.BulkResult{errors: errors} -> {:error, errors}
+              # Ripple the delta through the LATER balance rows of each account
+              # with the same single-account shift entries use — one ripple,
+              # one ordering rule, whatever kinds of rows an account holds.
+              with :ok <-
+                     shift_later_balances(
+                       balance_resource,
+                       from_account.id,
+                       Money.mult!(amount_delta, -1),
+                       result.id,
+                       changeset,
+                       context
+                     ),
+                   :ok <-
+                     shift_later_balances(
+                       balance_resource,
+                       to_account.id,
+                       amount_delta,
+                       result.id,
+                       changeset,
+                       context
+                     ) do
+                {:ok, result}
               end
 
             errors ->
@@ -235,6 +232,30 @@ defmodule AshDoubleEntry.Transfer.Changes.VerifyTransfer do
       end)
     else
       changeset
+    end
+  end
+
+  defp shift_later_balances(balance_resource, account_id, delta, after_ulid, changeset, context) do
+    balance_resource
+    |> Ash.bulk_update(
+      :shift_balances_after,
+      %{account_id: account_id, delta: delta, after_ulid: after_ulid},
+      Ash.Context.to_opts(context,
+        domain: changeset.domain,
+        authorize?: authorize?(changeset.domain),
+        strategy: [:atomic, :stream, :atomic_batches],
+        return_errors?: true,
+        stop_on_error?: true
+      )
+      |> Keyword.update(
+        :context,
+        %{ash_double_entry?: true},
+        &Map.put(&1, :ash_double_entry?, true)
+      )
+    )
+    |> case do
+      %Ash.BulkResult{status: :success} -> :ok
+      %Ash.BulkResult{errors: errors} -> {:error, errors}
     end
   end
 
