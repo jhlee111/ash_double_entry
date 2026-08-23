@@ -60,12 +60,7 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
     |> Ash.Resource.Builder.add_new_action(:update, :adjust_balance,
       changes: [
         Ash.Resource.Builder.build_action_change(
-          {Ash.Resource.Change.Filter,
-           filter:
-             expr(
-               account_id in [^arg(:from_account_id), ^arg(:to_account_id)] and
-                 transfer_id > ^arg(:transfer_id)
-             )}
+          {Ash.Resource.Change.Filter, filter: adjust_balance_filter(dsl)}
         ),
         Ash.Resource.Builder.build_action_change(
           {AshDoubleEntry.Balance.Changes.AdjustBalance,
@@ -94,6 +89,30 @@ defmodule AshDoubleEntry.Balance.Transformers.AddStructure do
       AshDoubleEntry.ULID,
       expr(transfer_id || entry_id)
     )
+  end
+
+  # The ripple a Transfer runs over the LATER balance rows of its two accounts.
+  # With an entry resource configured those rows come in two kinds, keyed by
+  # `transfer_id` or by `entry_id`, and a filter on `transfer_id` alone can never
+  # match an entry-keyed row — its `transfer_id` is NULL, so the comparison is
+  # NULL. A Transfer ordered before an existing entry (backdated, or merely
+  # sharing its millisecond with a lower ULID) therefore left the account's later
+  # balance stale by the whole transfer. `:shift_balances_after` has always
+  # compared both columns; compare both here too.
+  defp adjust_balance_filter(dsl) do
+    case AshDoubleEntry.Balance.Info.balance_entry_resource(dsl) do
+      {:ok, entry_resource} when not is_nil(entry_resource) ->
+        expr(
+          account_id in [^arg(:from_account_id), ^arg(:to_account_id)] and
+            (transfer_id > ^arg(:transfer_id) or entry_id > ^arg(:transfer_id))
+        )
+
+      _ ->
+        expr(
+          account_id in [^arg(:from_account_id), ^arg(:to_account_id)] and
+            transfer_id > ^arg(:transfer_id)
+        )
+    end
   end
 
   defbuilder maybe_add_entry_relationship(dsl) do

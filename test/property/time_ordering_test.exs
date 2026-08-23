@@ -680,17 +680,15 @@ defmodule AshDoubleEntry.Property.TimeOrderingTest do
       assert cents_of(balance_at(cash, at(20_000))) == 1_300
     end
 
-    @tag :library_bug
-    test "a backdated Transfer does NOT ripple through later entry-keyed balances" do
-      # The mirror image of the test above, and it loses money.
+    test "a backdated Transfer ripples through later entry-keyed balances too" do
+      # The mirror image of the test above. It used to lose money:
       #
-      # `:adjust_balance` — the ripple VerifyTransfer runs — filters on
+      # `:adjust_balance` — the ripple VerifyTransfer runs — filtered on
       # `account_id in [from, to] and transfer_id > ^arg(:transfer_id)`. An
       # entry-keyed Balance row has `transfer_id` NULL, so `NULL > ulid` is
-      # NULL and the row is never selected. `:shift_balances_after`, added for
+      # NULL and the row was never selected. `:shift_balances_after`, added for
       # the Entry path, deliberately covers both kinds
-      # (`transfer_id > ... or entry_id > ...`); `:adjust_balance` was never
-      # widened to match.
+      # (`transfer_id > ... or entry_id > ...`); `:adjust_balance` now does too.
       #
       # Mixing the two paths on one account is a configuration the library
       # explicitly supports: `Balance` takes both a `transfer_resource` and an
@@ -708,8 +706,8 @@ defmodule AshDoubleEntry.Property.TimeOrderingTest do
       # the transfer's own row is right...
       assert cents_of(balance_at(cash, at(7_000))) == 300
 
-      # ...but the entry-keyed row that sorts after it was never shifted, so
-      # the account's CURRENT balance is short by the whole transfer.
+      # ...and the entry-keyed row that sorts after it is shifted as well, so
+      # the account's CURRENT balance includes the transfer.
       assert cents_of(balance_at(cash, at(20_000))) == 1_300,
              "the backdated transfer's 300 never reached the later entry-keyed balance"
     end

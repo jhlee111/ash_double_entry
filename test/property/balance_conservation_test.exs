@@ -24,8 +24,8 @@ defmodule AshDoubleEntry.BalanceConservationPropertyTest do
   `balance_as_of_ulid`), never by inspecting Balance rows, so a property that
   holds is evidence about the API an application actually consumes.
 
-  Two tests are tagged `@tag :library_bug`. They are red on purpose and
-  document a real defect; `test_helper.exs` excludes them by default, and `mix test --include library_bug` runs them.
+  Two tests in "interleaved Transfer and Transaction writes" pin a defect fixed in
+  this stack: a Transfer's balance ripple never reached entry-keyed Balance rows.
   """
 
   use DataCase, async: false
@@ -607,13 +607,12 @@ defmodule AshDoubleEntry.BalanceConservationPropertyTest do
       )
     end
 
-    @tag :library_bug
-    test "LIBRARY BUG: a Transfer ordered before an entry never ripples into the entry's balance row" do
+    test "a Transfer ordered before an entry ripples into the entry's balance row" do
       # Shrunk counterexample: one Transaction, one Transfer, one account on
       # each side, no concurrency, two legs.
       #
       #   VerifyTransfer ripples its delta through later balance rows with the
-      #   Balance `:adjust_balance` action, whose filter is
+      #   Balance `:adjust_balance` action, whose filter used to be
       #
       #       account_id in [^arg(:from_account_id), ^arg(:to_account_id)] and
       #         transfer_id > ^arg(:transfer_id)
@@ -624,16 +623,14 @@ defmodule AshDoubleEntry.BalanceConservationPropertyTest do
       #   (`transfer_id > ... or entry_id > ...`); `:adjust_balance` was never
       #   widened to match when entry-keyed rows were introduced.
       #
-      #   Result: the account's LATEST balance row stays the stale entry-keyed
-      #   one, and `balance_as_of` reports a balance short by the entire
-      #   transfer. Reconstruction from the journals no longer agrees with the
-      #   reified balance.
-      #
-      #   PRE-EXISTING, not introduced by any of the four PRs on b43cb8c..063503a
-      #   — `lib/balance/` is untouched across that range. It only becomes
-      #   reachable now that entry-keyed Balance rows exist, so it is a blocker
-      #   for shipping the Transaction path alongside Transfer rather than a
-      #   regression in these PRs.
+      #   Result: the account's LATEST balance row stayed the stale entry-keyed
+      #   one, and `balance_as_of` reported a balance short by the entire
+      #   transfer — reconstruction from the journals no longer agreed with the
+      #   reified balance. Not an upstream defect: upstream has only
+      #   transfer-keyed rows, where this filter is complete. The multi-leg
+      #   feature added entry-keyed rows and widened its own ripple
+      #   (`:shift_balances_after`) to both kinds, but not Transfer's. Fixed
+      #   by comparing both columns here too.
       a = account("bug_a")
       b = account("bug_b")
 
@@ -649,7 +646,7 @@ defmodule AshDoubleEntry.BalanceConservationPropertyTest do
         timestamp: ~U[2024-01-01 00:00:00.000000Z]
       })
 
-      # Entries fold to 10.00 debit; the transfer adds 3.00. Reported: 10.00.
+      # Entries fold to 10.00 debit; the transfer adds 3.00 (it used to report 10.00).
       assert_money(
         balance_as_of(a.id),
         Money.new!(@currency, "13.00"),
@@ -657,17 +654,16 @@ defmodule AshDoubleEntry.BalanceConservationPropertyTest do
       )
     end
 
-    @tag :library_bug
-    test "LIBRARY BUG: the same defect fires with no backdating at all, on a millisecond tie" do
-      # The bug above needs no unusual input — only that the Transfer's ULID
+    test "the same holds with no backdating at all, on a millisecond tie" do
+      # The defect above needed no unusual input — only that the Transfer's ULID
       # sorts before an existing entry's. Entry and Transfer ids are ULIDs:
       # 48 bits of millisecond plus 80 RANDOM bits. Two writes inside one
       # millisecond therefore order by coin flip, and whenever the Transfer
-      # loses it silently drops itself from the account's balance.
+      # lost it silently dropped itself from the account's balance.
       #
-      # Measured on this fixture: 10 of 20 trials wrong. 40 trials here, so the
-      # test is deterministic for any practical purpose — it can only pass if 40
-      # consecutive coin flips all land the same way.
+      # Measured before the fix: 10 of 20 trials wrong. 40 trials here, so the
+      # test is deterministic for any practical purpose — unfixed, it could only
+      # pass if 40 consecutive coin flips all landed the same way.
       wrong =
         Enum.count(1..40, fn _ ->
           a = account("tie_a")
