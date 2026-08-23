@@ -14,9 +14,14 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     entry_resource =
       AshDoubleEntry.Transaction.Info.transaction_entry_resource!(changeset.resource)
 
-    with :ok <- validate_entries(entries),
-         %{valid?: true} = changeset <- validate_leg_amounts(changeset, entries),
-         %{valid?: true} = changeset <- validate_entry_inputs(changeset, entries, entry_resource) do
+    # Per-leg faults are checked — all of them, accumulated — before the
+    # journal-level ones, so a caller fixing a journal sees every bad leg at
+    # once: a negative leg is named even when the journal is also unbalanced.
+    with :ok <- validate_count(entries),
+         :ok <- validate_shape(entries),
+         %{valid?: true} = changeset <- validate_legs(changeset, entries, entry_resource),
+         :ok <- validate_currency(entries),
+         :ok <- validate_balance(entries) do
       cascade_entries(changeset, entries, entry_resource)
     else
       {:error, msg} -> Ash.Changeset.add_error(changeset, message: msg)
@@ -24,14 +29,14 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     end
   end
 
-  defp validate_entries([]), do: {:error, "Transaction must have at least 2 entries"}
-  defp validate_entries([_]), do: {:error, "Transaction must have at least 2 entries"}
+  defp validate_count([]), do: {:error, "Transaction must have at least 2 entries"}
+  defp validate_count([_]), do: {:error, "Transaction must have at least 2 entries"}
+  defp validate_count(_entries), do: :ok
 
-  defp validate_entries(entries) do
-    with :ok <- validate_shape(entries),
-         :ok <- validate_currency(entries) do
-      validate_balance(entries)
-    end
+  defp validate_legs(changeset, entries, entry_resource) do
+    changeset
+    |> validate_leg_amounts(entries)
+    |> validate_entry_inputs(entries, entry_resource)
   end
 
   # `side` and `amount` are read by the balance check below. Without this a leg
@@ -112,9 +117,10 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     entries
     |> Enum.with_index()
     |> Enum.reduce(changeset, fn {entry, index}, changeset ->
+      # `validate_shape/1` has already guaranteed a Money amount on every leg.
       amount = entry_amount(entry)
 
-      if match?(%Money{}, amount) and Money.negative?(amount) do
+      if Money.negative?(amount) do
         Ash.Changeset.add_error(
           changeset,
           Ash.Error.Changes.InvalidAttribute.exception(

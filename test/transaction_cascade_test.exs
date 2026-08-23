@@ -1088,4 +1088,44 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
                ])
     end
   end
+
+  describe "per-leg faults are reported before journal-level ones" do
+    # A caller fixing a journal wants every bad leg named at once. The amount
+    # check used to run after the balance check, so DR 10 / CR 10 / CR −5 came
+    # back as nothing but "unbalanced" — the negative leg, the actual mistake,
+    # was never pointed at — and a negative leg hid a misspelled key.
+    test "a negative leg is named even when the journal is also unbalanced" do
+      cash = account("order_cash")
+      revenue = account("order_revenue")
+      fees = account("order_fees")
+
+      result =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: fees.id, side: :credit, amount: Money.new!(:USD, "-5.00")}
+        ])
+
+      assert {:error, _} = result
+
+      assert {Ash.Error.Changes.InvalidAttribute, :amount, nil, [:entries, 2]} in leaf_summaries(
+               result
+             )
+    end
+
+    test "a negative leg and a misspelled key on another leg are both reported" do
+      cash = account("order_cash_2")
+      revenue = account("order_revenue_2")
+
+      result =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "-10.00")},
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "-10.00"), memo: "x"}
+        ])
+
+      summaries = leaf_summaries(result)
+      assert {Ash.Error.Changes.InvalidAttribute, :amount, nil, [:entries, 0]} in summaries
+      assert {Ash.Error.Invalid.NoSuchInput, nil, :memo, [:entries, 1]} in summaries
+    end
+  end
 end
