@@ -722,7 +722,7 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
   end
 
   describe "the caller's shared context reaches the Balance writes" do
-    # `Ash.Context.to_opts/2` forwards exactly the `:shared` slice of the caller's
+    # `Ash.Scope.to_opts/2` forwards exactly the `:shared` slice of the caller's
     # context to a nested action call — Ash documents `:shared` as the channel
     # every nested action sees, and the Transfer path forwards it untouched.
     # VerifyEntry passed `context:` to `to_opts` as an OVERRIDE, which replaces
@@ -945,7 +945,7 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
     alias AshDoubleEntry.Test.{TenantAccount, TenantEntry, TenantTransaction}
 
     # `VerifyTransfer` and `VerifyEntry` both build their `:lock_accounts` read with
-    # `Ash.Context.to_opts(context, ...)`, which carries the tenant (and the actor and
+    # `Ash.Scope.to_opts(context, ...)`, which carries the tenant (and the actor and
     # tracer) into the extension's own reads. A multitenant consumer is entitled to
     # the same from the up-front lock: without the tenant, Ash refuses the read
     # outright and the multi-leg feature is simply unavailable to that application.
