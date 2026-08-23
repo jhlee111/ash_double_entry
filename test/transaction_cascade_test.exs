@@ -519,6 +519,98 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
     end
   end
 
+  describe "a leg's currency must match its account's (#5)" do
+    test "a mismatch is a validation error at the leg's own index, and nothing is written", ctx do
+      _ = ctx
+      cash = account("cash_cur1")
+      revenue = account("revenue_cur1")
+
+      # Both legs agree with EACH OTHER (EUR), so the journal's own currency
+      # check passes — it is the accounts (USD) they disagree with. Before this
+      # fix that surfaced from deep inside VerifyEntry as Ash.Error.Unknown
+      # wrapping Money.add!'s ArgumentError, with no leg index.
+      result =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:EUR, "10.00")},
+          %{account_id: revenue.id, side: :credit, amount: Money.new!(:EUR, "10.00")}
+        ])
+
+      assert {:error, %Ash.Error.Invalid{}} = result
+
+      assert Enum.any?(leaf_summaries(result), fn {_mod, field, _input, path} ->
+               field == :amount and path == [:entries, 0]
+             end),
+             "expected a leaf at [:entries, 0] on :amount; got #{inspect(leaf_summaries(result))}"
+
+      assert count(Transaction) == 0
+      assert count(Entry) == 0
+    end
+  end
+
+  describe "accounts are locked up front, in one statement, in id order (#4)" do
+    # A live deadlock cannot be a valid red here: the test sandbox shares one
+    # connection, so two concurrent posts never contend for row locks. What CAN
+    # be pinned deterministically is the mechanism VerifyTransfer already uses —
+    # one `FOR UPDATE` over every account the journal touches, ordered, issued
+    # before any Entry exists — by watching the repo's query telemetry.
+    setup do
+      handler = "lock-order-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler,
+        [:ash_double_entry, :test, :repo, :query],
+        fn _event, _measurements, %{query: query}, _ -> send(test_pid, {:sql, query}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+      :ok
+    end
+
+    defp drain_sql(acc \\ []) do
+      receive do
+        {:sql, q} -> drain_sql([q | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
+
+    test "the first FOR UPDATE precedes the first entries insert, is ordered, and covers all legs",
+         ctx do
+      _ = ctx
+      # Three accounts referenced in an order that is NOT id order.
+      accounts = Enum.map(1..3, &account("lock_#{&1}"))
+      [a, b, c] = Enum.sort_by(accounts, & &1.id, :desc)
+
+      drain_sql()
+
+      {:ok, _} =
+        post([
+          %{account_id: a.id, side: :debit, amount: Money.new!(:USD, "30.00")},
+          %{account_id: b.id, side: :credit, amount: Money.new!(:USD, "20.00")},
+          %{account_id: c.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      sql = drain_sql()
+
+      first_lock = Enum.find_index(sql, &String.contains?(&1, "FOR UPDATE"))
+      first_entry_insert = Enum.find_index(sql, &String.contains?(&1, ~s(INSERT INTO "entries")))
+
+      assert first_lock, "no FOR UPDATE query was issued at all"
+      assert first_entry_insert, "no entries insert was observed"
+
+      assert first_lock < first_entry_insert,
+             "the first account lock came AFTER the first entry insert — locks are per leg, not up front"
+
+      lock = Enum.at(sql, first_lock)
+      assert lock =~ "ORDER BY", "the up-front lock is not ordered: #{lock}"
+
+      assert lock =~ ~r/= ANY\(|IN \(/,
+             "the up-front lock is not a single batched statement: #{lock}"
+    end
+  end
+
   describe "reversal" do
     test "a reversal carries the original legs' application-defined fields" do
       cash = account("cash_rv1")
@@ -551,6 +643,154 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
              |> Enum.map(&{&1.side, &1.line_item_id})
              |> Enum.sort() ==
                Enum.sort([{:credit, "li-cash"}, {:debit, "li-rev"}])
+    end
+  end
+
+  describe "the up-front lock runs in the caller's context (#4 follow-up)" do
+    alias AshDoubleEntry.Test.{TenantAccount, TenantEntry, TenantTransaction}
+
+    # `VerifyTransfer` and `VerifyEntry` both build their `:lock_accounts` read with
+    # `Ash.Context.to_opts(context, ...)`, which carries the tenant (and the actor and
+    # tracer) into the extension's own reads. A multitenant consumer is entitled to
+    # the same from the up-front lock: without the tenant, Ash refuses the read
+    # outright and the multi-leg feature is simply unavailable to that application.
+    test "a journal posts under attribute multitenancy, every cascaded Entry in the caller's tenant" do
+      org = Ash.UUID.generate()
+
+      [cash, revenue] =
+        for identifier <- ["tenant_cash", "tenant_revenue"] do
+          TenantAccount
+          |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"},
+            tenant: org
+          )
+          |> Ash.create!()
+        end
+
+      assert {:ok, transaction} =
+               TenantTransaction
+               |> Ash.Changeset.for_create(
+                 :post,
+                 %{
+                   entries: [
+                     %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                     %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                   ]
+                 },
+                 tenant: org
+               )
+               |> Ash.create()
+
+      entries =
+        TenantEntry
+        |> Ash.Query.filter(transaction_id == ^transaction.id)
+        |> Ash.read!(tenant: org)
+
+      assert length(entries) == 2
+      assert Enum.all?(entries, &(&1.org_id == org))
+    end
+
+    # Ash lets a caller hand the tenant (and actor, tracer) to `Ash.create/2`
+    # rather than to `for_create/3`. The change's `context` is a snapshot taken
+    # at `for_create`, so a hook that closes over it never sees them; the
+    # changeset the hook is handed does.
+    test "a tenant given to Ash.create/2 rather than for_create/3 is honoured too" do
+      org = Ash.UUID.generate()
+
+      [cash, revenue] =
+        for identifier <- ["tenant_cash_late", "tenant_revenue_late"] do
+          TenantAccount
+          |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"},
+            tenant: org
+          )
+          |> Ash.create!()
+        end
+
+      assert {:ok, transaction} =
+               TenantTransaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.create(tenant: org)
+
+      assert transaction.org_id == org
+    end
+  end
+
+  describe "a leg's account_id must cast to the Account's id type" do
+    # Before the up-front lock, a malformed id only ever reached the Entry changeset,
+    # where Ash cast it and returned `InvalidAttribute` at the leg. Feeding the raw
+    # value into the lock's `id in ^ids` filter instead raises `InvalidFilterValue`
+    # from inside the before_action hook — a 500 with no leg index where a 422 belongs.
+    test "a malformed id is a validation error at its own leg, not a raise from the lock query" do
+      cash = account("cast_cash")
+
+      result =
+        post([
+          %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: "not-a-uuid", side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      assert {:error, %Ash.Error.Invalid{}} = result
+
+      assert {Ash.Error.Changes.InvalidAttribute, :account_id, nil, [:entries, 1]} in leaf_summaries(
+               result
+             )
+
+      assert count(Transaction) == 0
+      assert count(Entry) == 0
+      assert count(Balance) == 0
+    end
+
+    test "a well-formed id that names no account is reported at its leg the same way" do
+      cash = account("cast_cash_2")
+      ghost = Ash.UUID.generate()
+
+      result =
+        post([
+          %{account_id: ghost, side: :debit, amount: Money.new!(:USD, "10.00")},
+          %{account_id: cash.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+        ])
+
+      assert {:error, %Ash.Error.Invalid{}} = result
+
+      assert {Ash.Error.Changes.InvalidAttribute, :account_id, nil, [:entries, 0]} in leaf_summaries(
+               result
+             )
+    end
+  end
+
+  describe "a leg's currency is compared against its account's normalised code" do
+    # `Account.currency` is an unconstrained string, and the released Transfer
+    # path only ever reads it through `Money.new!/2`, which normalises case. A
+    # code the library accepted on `open` has to stay postable on every path.
+    test "an account stored with a lowercase currency code posts", ctx do
+      _ = ctx
+
+      [cash, revenue] =
+        for identifier <- ["lc_cash", "lc_revenue"] do
+          Account
+          |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "usd"})
+          |> Ash.create!()
+        end
+
+      # Control: the released path accepts these accounts as they are.
+      assert {:ok, _} =
+               AshDoubleEntry.Test.Transfer
+               |> Ash.Changeset.for_create(:transfer, %{
+                 from_account_id: cash.id,
+                 to_account_id: revenue.id,
+                 amount: Money.new!(:USD, "1.00")
+               })
+               |> Ash.create()
+
+      assert {:ok, _} =
+               post([
+                 %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                 %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+               ])
     end
   end
 end

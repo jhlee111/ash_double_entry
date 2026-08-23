@@ -6,6 +6,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   @moduledoc false
   # Validates Σ debits == Σ credits per currency, then cascades Entry creation.
   use Ash.Resource.Change
+  require Ash.Query
 
   def change(changeset, _opts, _context) do
     entries = Ash.Changeset.get_argument(changeset, :entries) || []
@@ -137,34 +138,178 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   defp cascade_entries(changeset, entries, entry_resource) do
     app_fields = AshDoubleEntry.Entry.Info.entry_app_fields(entry_resource)
 
-    Ash.Changeset.before_action(changeset, fn changeset ->
-      # Read `posted_at` here rather than at change time. Function defaults are
-      # applied by `Ash.Changeset.set_defaults(:create, true)` on the way into the
-      # action, which runs after changes but before before_action hooks — at change
-      # time `posted_at` is still nil unless the caller supplied one.
-      posted_at = Ash.Changeset.get_attribute(changeset, :posted_at)
-      inputs = Enum.map(entries, &entry_input(&1, posted_at, app_fields))
+    account_resource =
+      AshDoubleEntry.Transaction.Info.transaction_account_resource!(changeset.resource)
 
-      changeset
-      |> Ash.Changeset.manage_relationship(:entries, inputs,
-        type: :create,
-        # Name the action rather than leaning on `type: :create`'s default of the
-        # PRIMARY create action — the Entry transformer adds `:create` with
-        # `add_new_action/4`, which does not mark it primary.
-        on_no_match: {:create, :create},
-        on_lookup: :ignore,
-        on_match: :ignore,
-        on_missing: :ignore,
-        authorize?: false,
-        # Ash builds the path as `opts[:error_path] || [opts[:meta][:id] || relationship.name,
-        # index]`. `meta[:id]` and the relationship name are both `:entries` today, so this
-        # is a no-op — it is here to hold the path steady if the relationship is renamed.
-        # `error_path:` is emphatically NOT the option to reach for: it REPLACES the whole
-        # path, collapsing every failing leg to `[:entries]` and destroying the index.
-        meta: [id: :entries]
-      )
-      |> Ash.Changeset.after_action(&verify_posted_at(&1, &2, posted_at))
+    id_attribute = Ash.Resource.Info.attribute(account_resource, :id)
+
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      # A leg's account_id is caller data. Cast it against the Account's id type
+      # HERE, before it reaches a filter: a value that does not cast used to blow
+      # up inside the lock query as `InvalidFilterValue`, raised out of this hook
+      # with no leg index — where the Entry changeset would have returned
+      # `InvalidAttribute` at the leg. The cast value is also what the lock
+      # result is keyed by, so an id the database matches case-insensitively is
+      # found again in the map.
+      legs = Enum.map(entries, &{&1, cast_account_id(&1, id_attribute)})
+
+      # Lock every account this journal touches FIRST, in one batched FOR UPDATE,
+      # before any row of this journal is inserted. That placement is what keeps
+      # two concurrent journals over the same accounts from deadlocking: each
+      # takes every row it needs in one statement, so one simply waits for the
+      # other to commit. The sort only makes the lock order deterministic across
+      # query plans — measured, the deadlock rate is 0/240 with or without it.
+      # VerifyEntry's later per-leg lock is then a re-lock of a row this
+      # transaction already holds, never a wait. (VerifyTransfer does NOT do
+      # this: it locks inside an after_action, after the transfer row is in, and
+      # two opposite-direction transfers can still deadlock each other.)
+      accounts = lock_accounts(legs, account_resource, changeset)
+
+      case validate_legs_against_accounts(legs, accounts) do
+        [] ->
+          # Read `posted_at` here rather than at change time. Function defaults are
+          # applied by `Ash.Changeset.set_defaults(:create, true)` on the way into the
+          # action, which runs after changes but before before_action hooks — at change
+          # time `posted_at` is still nil unless the caller supplied one.
+          posted_at = Ash.Changeset.get_attribute(changeset, :posted_at)
+          inputs = Enum.map(entries, &entry_input(&1, posted_at, app_fields))
+          cascade(changeset, inputs, posted_at)
+
+        errors ->
+          Enum.reduce(errors, changeset, fn {error, path}, changeset ->
+            Ash.Changeset.add_error(changeset, error, path)
+          end)
+      end
     end)
+  end
+
+  defp cast_account_id(entry, id_attribute) do
+    case Ash.Type.cast_input(id_attribute.type, entry_account_id(entry), id_attribute.constraints) do
+      {:ok, id} -> {:ok, id}
+      _ -> :error
+    end
+  end
+
+  # Every read the extension makes on its own behalf runs as the caller — with
+  # the tenant, actor and tracer of the action that triggered it — and so must
+  # this one: without the tenant, a multitenant Account resource refuses the read
+  # outright and `post` is unavailable to that application. The change's own
+  # `context` is a snapshot taken at `for_create`, so a tenant or actor handed to
+  # `Ash.create/2` instead never appears in it; the changeset this hook is given
+  # carries the effective values, in the same places Ash reads them from.
+  defp lock_accounts(legs, account_resource, changeset) do
+    ids = for {_entry, {:ok, id}} <- legs, not is_nil(id), uniq: true, do: id
+
+    account_resource
+    |> Ash.Query.filter(id in ^ids)
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.Query.set_context(%{ash_double_entry?: true})
+    |> Ash.Query.for_read(
+      :lock_accounts,
+      %{},
+      Ash.Scope.to_opts(caller_scope(changeset), authorize?: false, domain: changeset.domain)
+    )
+    |> Ash.read!()
+    |> Map.new(&{&1.id, &1})
+  end
+
+  defp caller_scope(changeset) do
+    private = changeset.context[:private] || %{}
+
+    %{
+      actor: private[:actor],
+      tenant: changeset.tenant,
+      tracer: private[:tracer],
+      shared: changeset.context[:shared] || %{}
+    }
+  end
+
+  # With the accounts in hand, two things the journal-level checks cannot see:
+  # a leg pointing at an account that does not exist, and a leg whose Money is
+  # in a currency its account does not hold. Both used to surface late — the
+  # first as a database constraint, the second as Ash.Error.Unknown wrapping
+  # Money.add!'s ArgumentError from inside VerifyEntry — and neither named the
+  # leg. Now both are validation errors at `[:entries, index]`.
+  defp validate_legs_against_accounts(legs, accounts) do
+    legs
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{entry, cast}, index} ->
+      account =
+        case cast do
+          {:ok, id} -> Map.get(accounts, id)
+          :error -> nil
+        end
+
+      amount = entry_amount(entry)
+
+      cond do
+        cast == :error ->
+          [
+            {Ash.Error.Changes.InvalidAttribute.exception(
+               field: :account_id,
+               value: entry_account_id(entry),
+               message: "is invalid"
+             ), [:entries, index]}
+          ]
+
+        is_nil(account) ->
+          [
+            {Ash.Error.Changes.InvalidAttribute.exception(
+               field: :account_id,
+               value: entry_account_id(entry),
+               message: "does not exist"
+             ), [:entries, index]}
+          ]
+
+        match?(%Money{}, amount) and amount.currency != account_currency(account) ->
+          [
+            {Ash.Error.Changes.InvalidAttribute.exception(
+               field: :amount,
+               value: amount,
+               message:
+                 "is in #{amount.currency}, but account #{account.identifier} holds #{account.currency}"
+             ), [:entries, index]}
+          ]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  # `Account.currency` is an unconstrained string, and the released Transfer path
+  # only ever reads it through `Money.new!/2`, which normalises case — `"usd"`,
+  # `:usd` and `"USD"` all become `:USD`. Compare the way that path reads it, not
+  # byte-for-byte: a code the library accepted on `open` has to stay postable. A
+  # code Money does not know at all matches no leg, and the mismatch error names
+  # it as stored.
+  defp account_currency(account) do
+    case Money.new(0, account.currency) do
+      %Money{currency: currency} -> currency
+      {:error, _} -> nil
+    end
+  end
+
+  defp cascade(changeset, inputs, posted_at) do
+    changeset
+    |> Ash.Changeset.manage_relationship(:entries, inputs,
+      type: :create,
+      # Name the action rather than leaning on `type: :create`'s default of the
+      # PRIMARY create action — the Entry transformer adds `:create` with
+      # `add_new_action/4`, which does not mark it primary.
+      on_no_match: {:create, :create},
+      on_lookup: :ignore,
+      on_match: :ignore,
+      on_missing: :ignore,
+      authorize?: false,
+      # Ash builds the path as `opts[:error_path] || [opts[:meta][:id] || relationship.name,
+      # index]`. `meta[:id]` and the relationship name are both `:entries` today, so this
+      # is a no-op — it is here to hold the path steady if the relationship is renamed.
+      # `error_path:` is emphatically NOT the option to reach for: it REPLACES the whole
+      # path, collapsing every failing leg to `[:entries]` and destroying the index.
+      meta: [id: :entries]
+    )
+    |> Ash.Changeset.after_action(&verify_posted_at(&1, &2, posted_at))
   end
 
   # Build a fresh plain map. Never merge onto the caller's value: a leg given as an
