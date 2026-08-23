@@ -12,6 +12,12 @@ defmodule AshDoubleEntry.Test.StrictDomain do
   so passing `domain:` at an already-declared resource is silently ignored and
   any test written that way is vacuous.
 
+  The resources carry real policies, the way an application's would — "you
+  must be signed in" on Account, Transaction and Balance, and Entry creation
+  allowed only from the Transaction cascade. Without an authorizer a domain
+  gate is all `authorize?: true` can prove; with these, a test proves that the
+  extension's own calls run as the caller.
+
   The strict resources share the ordinary tables — nothing here is about
   storage, only about how the domain is configured.
   """
@@ -34,6 +40,7 @@ defmodule AshDoubleEntry.Test.StrictAccount do
   use Ash.Resource,
     domain: AshDoubleEntry.Test.StrictDomain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshDoubleEntry.Account]
 
   postgres do
@@ -53,6 +60,12 @@ defmodule AshDoubleEntry.Test.StrictAccount do
       default true
     end
   end
+
+  policies do
+    policy always() do
+      authorize_if actor_present()
+    end
+  end
 end
 
 defmodule AshDoubleEntry.Test.StrictBalance do
@@ -60,6 +73,7 @@ defmodule AshDoubleEntry.Test.StrictBalance do
   use Ash.Resource,
     domain: AshDoubleEntry.Test.StrictDomain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshDoubleEntry.Balance]
 
   postgres do
@@ -76,6 +90,12 @@ defmodule AshDoubleEntry.Test.StrictBalance do
   actions do
     defaults [:destroy]
   end
+
+  policies do
+    policy always() do
+      authorize_if actor_present()
+    end
+  end
 end
 
 defmodule AshDoubleEntry.Test.StrictTransaction do
@@ -83,6 +103,7 @@ defmodule AshDoubleEntry.Test.StrictTransaction do
   use Ash.Resource,
     domain: AshDoubleEntry.Test.StrictDomain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshDoubleEntry.Transaction]
 
   postgres do
@@ -96,6 +117,12 @@ defmodule AshDoubleEntry.Test.StrictTransaction do
     balance_resource AshDoubleEntry.Test.StrictBalance
     create_accept [:posted_at]
   end
+
+  policies do
+    policy always() do
+      authorize_if actor_present()
+    end
+  end
 end
 
 defmodule AshDoubleEntry.Test.StrictEntry do
@@ -103,6 +130,7 @@ defmodule AshDoubleEntry.Test.StrictEntry do
   use Ash.Resource,
     domain: AshDoubleEntry.Test.StrictDomain,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshDoubleEntry.Entry]
 
   postgres do
@@ -113,5 +141,17 @@ defmodule AshDoubleEntry.Test.StrictEntry do
   entry do
     account_resource AshDoubleEntry.Test.StrictAccount
     transaction_resource AshDoubleEntry.Test.StrictTransaction
+  end
+
+  # Entries exist only as legs of a journal: creation is allowed from the
+  # Transaction cascade and from nowhere else.
+  policies do
+    policy action_type(:create) do
+      authorize_if accessing_from(AshDoubleEntry.Test.StrictTransaction, :entries)
+    end
+
+    policy always() do
+      authorize_if actor_present()
+    end
   end
 end

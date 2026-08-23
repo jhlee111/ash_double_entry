@@ -613,21 +613,38 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
 
   describe "a domain configured `authorize :always` (#3)" do
     # Every call the extension makes on its own behalf — the account lock, the
-    # cascaded Entry creates, the Balance upsert and shift, the reverse read —
-    # runs with `authorize?: false`. On an `authorize :always` domain Ash raises
-    # DomainRequiresAuthorization for that unless the query or changeset is
-    # marked internal (`context.private.internal?`, Ash.Actions.Helpers). Before
-    # this fix nothing was, so `post` could not run at all on such a domain.
+    # cascaded Entry creates, the Balance upsert and shift, the reversal's read —
+    # runs `authorize?: authorize?(domain)`: on an `authorize :always` domain Ash
+    # refuses a bare `authorize?: false` outright (DomainRequiresAuthorization),
+    # so those calls authorize there, and bypass everywhere else, as Transfer's do.
     #
-    # These use the parallel Strict* resources: Ash resolves the domain from the
-    # resource before the `:domain` option, so passing `domain:` at an ordinary
-    # test resource is ignored and the test proves nothing.
-    alias AshDoubleEntry.Test.{StrictAccount, StrictDomain, StrictEntry, StrictTransaction}
+    # The parallel Strict* resources carry REAL policies — "you must be signed
+    # in" on Account, Transaction and Balance; Entry creation allowed only from
+    # the Transaction cascade — so these tests prove the calls run as the caller,
+    # not merely that the domain gate is passed. They have to be a parallel SET:
+    # Ash resolves the domain from the resource before the `:domain` option, so
+    # `domain:` at an ordinary test resource is ignored and proves nothing.
+    alias AshDoubleEntry.Test.{StrictAccount, StrictEntry, StrictTransaction}
+
+    @ledger %{id: "ledger-1"}
 
     defp strict_account(identifier) do
       StrictAccount
       |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"})
-      |> Ash.create!(authorize?: true)
+      |> Ash.create!(authorize?: true, actor: @ledger)
+    end
+
+    defp strict_legs(cash, revenue) do
+      [
+        %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+        %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+      ]
+    end
+
+    defp strict_post(cash, revenue, opts) do
+      StrictTransaction
+      |> Ash.Changeset.for_create(:post, %{entries: strict_legs(cash, revenue)})
+      |> Ash.create(Keyword.put(opts, :authorize?, true))
     end
 
     test "control: the domain really is strict", ctx do
@@ -638,51 +655,69 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
       end
     end
 
-    test "Transaction.post still posts", ctx do
+    test "control: the policies really run — without an actor, no post", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict_anon")
+      revenue = strict_account("revenue_strict_anon")
+
+      assert {:error, %Ash.Error.Forbidden{}} = strict_post(cash, revenue, [])
+    end
+
+    test "Transaction.post posts, carrying the caller's actor into every internal call", ctx do
       _ = ctx
       cash = strict_account("cash_strict")
       revenue = strict_account("revenue_strict")
 
-      assert {:ok, txn} =
-               StrictTransaction
-               |> Ash.Changeset.for_create(:post, %{
-                 entries: [
-                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
-                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
-                 ]
-               })
-               |> Ash.create(authorize?: true)
+      # The Account read policy needs an actor. The up-front lock is a read of
+      # Account: were it issued without the caller's actor, Ash would FILTER it
+      # to no rows and every leg would come back as "account_id does not exist"
+      # — for accounts that exist and that this very actor can read.
+      assert {:ok, txn} = strict_post(cash, revenue, actor: @ledger)
 
       entries =
         StrictEntry
         |> Ash.Query.filter(transaction_id == ^txn.id)
-        |> Ash.read!(authorize?: true)
+        |> Ash.read!(authorize?: true, actor: @ledger)
 
       assert length(entries) == 2
     end
 
-    test "Transaction.reverse still posts", ctx do
+    test "Transaction.reverse posts too", ctx do
       _ = ctx
       cash = strict_account("cash_strict_r")
       revenue = strict_account("revenue_strict_r")
+      {:ok, original} = strict_post(cash, revenue, actor: @ledger)
 
-      {:ok, original} =
-        StrictTransaction
-        |> Ash.Changeset.for_create(:post, %{
-          entries: [
-            %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
-            %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
-          ]
-        })
-        |> Ash.create(authorize?: true)
-
+      # `reverse` reads the original while the changeset is being BUILT — the
+      # reversing legs have to exist before they can be validated — so the actor
+      # has to be on `for_create/3`, the contract Ash gives every build-time
+      # change. `post` does its reads in hooks and takes it on `Ash.create/2` too.
       assert {:ok, reversal} =
                StrictTransaction
-               |> Ash.Changeset.for_create(:reverse, %{original_transaction_id: original.id})
-               |> Ash.create(authorize?: true)
+               |> Ash.Changeset.for_create(:reverse, %{original_transaction_id: original.id},
+                 actor: @ledger
+               )
+               |> Ash.create(authorize?: true, actor: @ledger)
 
       assert reversal.reverses_transaction_id == original.id
-      assert StrictDomain
+    end
+
+    test "an Entry can be created through the cascade and from nowhere else", ctx do
+      _ = ctx
+      cash = strict_account("cash_strict_direct")
+      revenue = strict_account("revenue_strict_direct")
+      {:ok, txn} = strict_post(cash, revenue, actor: @ledger)
+
+      assert {:error, %Ash.Error.Forbidden{}} =
+               StrictEntry
+               |> Ash.Changeset.for_create(:create, %{
+                 transaction_id: txn.id,
+                 account_id: cash.id,
+                 side: :debit,
+                 amount: Money.new!(:USD, "1.00"),
+                 timestamp: txn.posted_at
+               })
+               |> Ash.create(authorize?: true, actor: @ledger)
     end
   end
 
