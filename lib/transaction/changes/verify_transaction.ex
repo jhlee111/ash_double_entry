@@ -8,7 +8,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   use Ash.Resource.Change
   require Ash.Query
 
-  def change(changeset, _opts, context) do
+  def change(changeset, _opts, _context) do
     entries = Ash.Changeset.get_argument(changeset, :entries) || []
 
     entry_resource =
@@ -16,7 +16,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
 
     with :ok <- validate_entries(entries),
          %{valid?: true} = changeset <- validate_entry_inputs(changeset, entries, entry_resource) do
-      cascade_entries(changeset, entries, entry_resource, context)
+      cascade_entries(changeset, entries, entry_resource)
     else
       {:error, msg} -> Ash.Changeset.add_error(changeset, message: msg)
       %Ash.Changeset{} = changeset -> changeset
@@ -135,7 +135,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   defp caller_keys(%_{}), do: []
   defp caller_keys(entry) when is_map(entry), do: Map.keys(entry)
 
-  defp cascade_entries(changeset, entries, entry_resource, context) do
+  defp cascade_entries(changeset, entries, entry_resource) do
     app_fields = AshDoubleEntry.Entry.Info.entry_app_fields(entry_resource)
 
     account_resource =
@@ -163,7 +163,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
       # transaction already holds, never a wait. (VerifyTransfer does NOT do
       # this: it locks inside an after_action, after the transfer row is in, and
       # two opposite-direction transfers can still deadlock each other.)
-      accounts = lock_accounts(legs, account_resource, changeset, context)
+      accounts = lock_accounts(legs, account_resource, changeset)
 
       case validate_legs_against_accounts(legs, accounts) do
         [] ->
@@ -190,12 +190,14 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     end
   end
 
-  # The change context carries the caller's tenant, actor and tracer. Every other
-  # read the extension makes on its own behalf threads it through
-  # `Ash.Context.to_opts/2` — `VerifyTransfer` and `VerifyEntry` both do — and so
-  # must this one: without the tenant, a multitenant Account resource refuses the
-  # read outright and `post` is unavailable to that application.
-  defp lock_accounts(legs, account_resource, changeset, context) do
+  # Every read the extension makes on its own behalf runs as the caller — with
+  # the tenant, actor and tracer of the action that triggered it — and so must
+  # this one: without the tenant, a multitenant Account resource refuses the read
+  # outright and `post` is unavailable to that application. The change's own
+  # `context` is a snapshot taken at `for_create`, so a tenant or actor handed to
+  # `Ash.create/2` instead never appears in it; the changeset this hook is given
+  # carries the effective values, in the same places Ash reads them from.
+  defp lock_accounts(legs, account_resource, changeset) do
     ids = for {_entry, {:ok, id}} <- legs, not is_nil(id), uniq: true, do: id
 
     account_resource
@@ -205,10 +207,21 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
     |> Ash.Query.for_read(
       :lock_accounts,
       %{},
-      Ash.Context.to_opts(context, authorize?: false, domain: changeset.domain)
+      Ash.Scope.to_opts(caller_scope(changeset), authorize?: false, domain: changeset.domain)
     )
     |> Ash.read!()
     |> Map.new(&{&1.id, &1})
+  end
+
+  defp caller_scope(changeset) do
+    private = changeset.context[:private] || %{}
+
+    %{
+      actor: private[:actor],
+      tenant: changeset.tenant,
+      tracer: private[:tracer],
+      shared: changeset.context[:shared] || %{}
+    }
   end
 
   # With the accounts in hand, two things the journal-level checks cannot see:

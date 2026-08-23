@@ -688,6 +688,35 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
       assert length(entries) == 2
       assert Enum.all?(entries, &(&1.org_id == org))
     end
+
+    # Ash lets a caller hand the tenant (and actor, tracer) to `Ash.create/2`
+    # rather than to `for_create/3`. The change's `context` is a snapshot taken
+    # at `for_create`, so a hook that closes over it never sees them; the
+    # changeset the hook is handed does.
+    test "a tenant given to Ash.create/2 rather than for_create/3 is honoured too" do
+      org = Ash.UUID.generate()
+
+      [cash, revenue] =
+        for identifier <- ["tenant_cash_late", "tenant_revenue_late"] do
+          TenantAccount
+          |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "USD"},
+            tenant: org
+          )
+          |> Ash.create!()
+        end
+
+      assert {:ok, transaction} =
+               TenantTransaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.create(tenant: org)
+
+      assert transaction.org_id == org
+    end
   end
 
   describe "a leg's account_id must cast to the Account's id type" do
