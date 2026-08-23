@@ -19,6 +19,13 @@ defmodule AshDoubleEntry.Test.Transfer do
     balance_resource AshDoubleEntry.Test.Balance
   end
 
+  attributes do
+    # Test scaffolding only: lets a Transfer be managed as a child of a
+    # Transaction — a consumer-owned relationship the extension knows nothing
+    # about, with its own balance maintenance.
+    attribute :transaction_id, AshDoubleEntry.ULID, public?: true
+  end
+
   actions do
     defaults [:read, :destroy]
 

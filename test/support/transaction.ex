@@ -20,4 +20,12 @@ defmodule AshDoubleEntry.Test.Transaction do
     balance_resource AshDoubleEntry.Test.Balance
     create_accept [:posted_at]
   end
+
+  relationships do
+    # Test scaffolding only — see Test.Transfer.
+    has_many :settlements, AshDoubleEntry.Test.Transfer do
+      destination_attribute :transaction_id
+      public? true
+    end
+  end
 end

@@ -142,15 +142,18 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
   # `:shared` is what carries it down. `set_context/2` also merges `:shared`
   # back over the top level, so the parent's own reads are unchanged, and the
   # child sees it at the top level too — VerifyEntry needs no second lookup.
-  defp share_skip_balance_updates(changeset) do
-    case get_in(changeset.context, [:ash_double_entry, :skip_balance_updates]) do
-      nil ->
-        changeset
-
-      value ->
-        Ash.Changeset.set_context(changeset, %{
-          shared: %{ash_double_entry: %{skip_balance_updates: value}}
-        })
+  #
+  # It is shared SCOPED TO THE ENTRY RESOURCE, not as the bare flag: `:shared`
+  # reaches every nested action on this changeset, including a consumer-managed
+  # child the extension knows nothing about — a Transfer managed off the
+  # Transaction, say — which maintains its own balances and must keep doing so.
+  defp share_skip_balance_updates(changeset, entry_resource) do
+    if get_in(changeset.context, [:ash_double_entry, :skip_balance_updates]) do
+      Ash.Changeset.set_context(changeset, %{
+        shared: %{ash_double_entry: %{skip_balance_updates_for: entry_resource}}
+      })
+    else
+      changeset
     end
   end
 
@@ -167,7 +170,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
       # sets the flag after `for_create` returns, so at change time it is not on
       # the changeset yet. A before_action hook sees the context the caller
       # actually assembled.
-      changeset = share_skip_balance_updates(changeset)
+      changeset = share_skip_balance_updates(changeset, entry_resource)
 
       # A leg's account_id is caller data. Cast it against the Account's id type
       # HERE, before it reaches a filter: a value that does not cast used to blow

@@ -9,7 +9,7 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
   require Ash.Query
 
   def change(changeset, _opts, context) do
-    if changeset.context[:ash_double_entry][:skip_balance_updates] do
+    if skip_balance_updates?(changeset) do
       changeset
     else
       changeset =
@@ -131,6 +131,13 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
         Map.put(private, :internal?, true)
       end)
     )
+  end
+
+  # Set directly on an Entry changeset, or shared by the Transaction cascade —
+  # scoped to this resource so the flag does not leak into other nested actions.
+  defp skip_balance_updates?(changeset) do
+    flags = changeset.context[:ash_double_entry] || %{}
+    flags[:skip_balance_updates] || flags[:skip_balance_updates_for] == changeset.resource
   end
 
   # Mirrors `VerifyTransfer`: on a domain configured `authorize :always` the

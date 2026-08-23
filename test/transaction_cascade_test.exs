@@ -778,6 +778,47 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
       assert txn |> Ash.load!(:entries) |> Map.get(:entries) |> length() == 2
       assert count(Balance) == balances_before, "balance rows were written despite the flag"
     end
+
+    # The flag is the Transaction's escape hatch for ITS entries. Re-setting it
+    # under `:shared` hands it to every nested action on the changeset — including
+    # a consumer-managed child the extension knows nothing about. A Transfer
+    # managed as a child of the Transaction maintains its own balances and has to
+    # keep doing so.
+    test "the flag does not leak into a consumer-managed nested Transfer", ctx do
+      _ = ctx
+      cash = account("cash_skip_nested")
+      revenue = account("revenue_skip_nested")
+      balances_before = count(Balance)
+
+      assert {:ok, txn} =
+               Transaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.Changeset.set_context(%{ash_double_entry: %{skip_balance_updates: true}})
+               |> Ash.Changeset.manage_relationship(
+                 :settlements,
+                 [
+                   %{
+                     from_account_id: cash.id,
+                     to_account_id: revenue.id,
+                     amount: Money.new!(:USD, "1.00")
+                   }
+                 ],
+                 type: :create,
+                 on_no_match: {:create, :transfer}
+               )
+               |> Ash.create()
+
+      assert txn |> Ash.load!(:settlements) |> Map.get(:settlements) |> length() == 1
+
+      # The entries' balance rows were skipped; the Transfer's two were written.
+      assert count(Balance) == balances_before + 2,
+             "the nested Transfer's balance maintenance was skipped by the Transaction's flag"
+    end
   end
 
   describe "reversal" do
