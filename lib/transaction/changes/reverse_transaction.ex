@@ -12,6 +12,11 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
   def change(changeset, _opts, context) do
     original_id = Ash.Changeset.get_argument(changeset, :original_transaction_id)
 
+    # This read happens while the changeset is being built, not in a hook: the
+    # reversing legs have to be on the changeset before VerifyTransaction can
+    # validate them. So the caller's actor and tenant must arrive with
+    # `for_create/3` — the contract Ash gives every build-time change — whereas
+    # `post`, whose reads run in hooks, also honours them given to `Ash.create/2`.
     original =
       changeset.resource
       |> Ash.Query.filter(id == ^original_id)

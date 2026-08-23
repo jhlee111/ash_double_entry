@@ -22,7 +22,7 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 - `mix ash_double_entry.gen.multi_leg_migration` generator — creates `transactions` + `entries` tables.
 - New tutorial: `documentation/tutorials/multi-leg-journal-entries.md`.
 - Pointer in getting-started tutorial to the multi-leg tutorial.
-- `entry.create_accept` — additional attributes accepted when an Entry is created, carried through from the corresponding entry map given to `Transaction.post` and copied off the original's legs by `Transaction.reverse`. Lets an application hang its own dimensions (a line item id, a cost centre) off individual legs of a journal. These attributes are written with authorization bypassed, the same as every other field of a cascaded Entry.
+- `entry.create_accept` — additional attributes accepted when an Entry is created, carried through from the corresponding entry map given to `Transaction.post` and copied off the original's legs by `Transaction.reverse`. Lets an application hang its own dimensions (a line item id, a cost centre) off individual legs of a journal. Like every other field of a cascaded Entry they are written under the domain's authorization posture — bypassed on `:by_default`/`:when_requested` domains, authorized on `authorize :always` domains, where an Entry create policy runs against the cascade (`accessing_from(YourTransaction, :entries)` allows only the cascade).
 
 ### Changed
 - Existing `Transfer` API and behavior unchanged. Within the (unreleased) multi-leg feature, `Transaction.post` changed in four observable ways:
