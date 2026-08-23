@@ -732,4 +732,36 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
              )
     end
   end
+
+  describe "a leg's currency is compared against its account's normalised code" do
+    # `Account.currency` is an unconstrained string, and the released Transfer
+    # path only ever reads it through `Money.new!/2`, which normalises case. A
+    # code the library accepted on `open` has to stay postable on every path.
+    test "an account stored with a lowercase currency code posts", ctx do
+      _ = ctx
+
+      [cash, revenue] =
+        for identifier <- ["lc_cash", "lc_revenue"] do
+          Account
+          |> Ash.Changeset.for_create(:open, %{identifier: identifier, currency: "usd"})
+          |> Ash.create!()
+        end
+
+      # Control: the released path accepts these accounts as they are.
+      assert {:ok, _} =
+               AshDoubleEntry.Test.Transfer
+               |> Ash.Changeset.for_create(:transfer, %{
+                 from_account_id: cash.id,
+                 to_account_id: revenue.id,
+                 amount: Money.new!(:USD, "1.00")
+               })
+               |> Ash.create()
+
+      assert {:ok, _} =
+               post([
+                 %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                 %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+               ])
+    end
+  end
 end

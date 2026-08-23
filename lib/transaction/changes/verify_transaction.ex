@@ -244,7 +244,7 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
              ), [:entries, index]}
           ]
 
-        match?(%Money{}, amount) and to_string(amount.currency) != account.currency ->
+        match?(%Money{}, amount) and amount.currency != account_currency(account) ->
           [
             {Ash.Error.Changes.InvalidAttribute.exception(
                field: :amount,
@@ -258,6 +258,19 @@ defmodule AshDoubleEntry.Transaction.Changes.VerifyTransaction do
           []
       end
     end)
+  end
+
+  # `Account.currency` is an unconstrained string, and the released Transfer path
+  # only ever reads it through `Money.new!/2`, which normalises case — `"usd"`,
+  # `:usd` and `"USD"` all become `:USD`. Compare the way that path reads it, not
+  # byte-for-byte: a code the library accepted on `open` has to stay postable. A
+  # code Money does not know at all matches no leg, and the mismatch error names
+  # it as stored.
+  defp account_currency(account) do
+    case Money.new(0, account.currency) do
+      %Money{currency: currency} -> currency
+      {:error, _} -> nil
+    end
   end
 
   defp cascade(changeset, inputs, posted_at) do
