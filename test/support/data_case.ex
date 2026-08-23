@@ -19,7 +19,17 @@ defmodule DataCase do
   @spec setup_sandbox(any) :: :ok
   def setup_sandbox(tags) do
     start_supervised!(AshDoubleEntry.Test.Repo)
-    pid = Sandbox.start_owner!(AshDoubleEntry.Test.Repo, shared: not tags[:async])
+
+    # A property holds its sandbox connection for the whole `check all`, which on
+    # a loaded host runs past the sandbox's 120 s `:ownership_timeout`; ExUnit's
+    # own `timeout` tag remains the ceiling. Opt in with
+    # `@moduletag ownership_timeout: :infinity`.
+    pid =
+      Sandbox.start_owner!(AshDoubleEntry.Test.Repo,
+        shared: not tags[:async],
+        ownership_timeout: tags[:ownership_timeout] || 120_000
+      )
+
     on_exit(fn -> Sandbox.stop_owner(pid) end)
   end
 end
