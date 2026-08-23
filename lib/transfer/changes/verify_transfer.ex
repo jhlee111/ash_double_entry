@@ -96,7 +96,7 @@ defmodule AshDoubleEntry.Transfer.Changes.VerifyTransfer do
             |> Ash.Query.for_read(
               :lock_accounts,
               %{},
-              Ash.Context.to_opts(context,
+              Ash.Scope.to_opts(context,
                 authorize?: authorize?(changeset.domain),
                 domain: changeset.domain
               )
@@ -139,7 +139,7 @@ defmodule AshDoubleEntry.Transfer.Changes.VerifyTransfer do
                 ],
                 balance_resource,
                 :upsert_balance,
-                Ash.Context.to_opts(context,
+                Ash.Scope.to_opts(context,
                   domain: changeset.domain,
                   authorize?: authorize?(changeset.domain),
                   upsert_fields: [:balance],
@@ -219,7 +219,7 @@ defmodule AshDoubleEntry.Transfer.Changes.VerifyTransfer do
         |> Ash.bulk_destroy(
           destroy_action,
           %{},
-          Ash.Context.to_opts(context,
+          Ash.Scope.to_opts(context,
             authorize?: authorize?(changeset.domain),
             domain: changeset.domain,
             strategy: [:stream, :atomic, :atomic_batches]
@@ -240,7 +240,7 @@ defmodule AshDoubleEntry.Transfer.Changes.VerifyTransfer do
     |> Ash.bulk_update(
       :shift_balances_after,
       %{account_id: account_id, delta: delta, after_ulid: after_ulid},
-      Ash.Context.to_opts(context,
+      Ash.Scope.to_opts(context,
         domain: changeset.domain,
         authorize?: authorize?(changeset.domain),
         strategy: [:atomic, :stream, :atomic_batches],

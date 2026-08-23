@@ -23,7 +23,7 @@ defmodule AshDoubleEntry.Transaction.Changes.ReverseTransaction do
       |> Ash.Query.load(:entries)
       |> Ash.Query.set_context(%{private: %{internal?: true}})
       |> Ash.read_one!(
-        Ash.Context.to_opts(context,
+        Ash.Scope.to_opts(context,
           authorize?: authorize?(changeset.domain),
           domain: changeset.domain
         )

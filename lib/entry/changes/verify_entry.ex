@@ -49,7 +49,7 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
           |> Ash.Query.for_read(
             :lock_accounts,
             %{},
-            Ash.Context.to_opts(context,
+            Ash.Scope.to_opts(context,
               authorize?: authorize?(changeset.domain),
               domain: changeset.domain
             )
@@ -73,7 +73,7 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
           balance_resource,
           :upsert_balance,
           context
-          |> Ash.Context.to_opts(
+          |> Ash.Scope.to_opts(
             domain: changeset.domain,
             authorize?: authorize?(changeset.domain),
             upsert_fields: [:balance],
@@ -96,7 +96,7 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
                 after_ulid: result.id
               },
               context
-              |> Ash.Context.to_opts(
+              |> Ash.Scope.to_opts(
                 domain: changeset.domain,
                 authorize?: authorize?(changeset.domain),
                 strategy: [:atomic, :stream, :atomic_batches],
@@ -117,7 +117,7 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
     end
   end
 
-  # `Ash.Context.to_opts/2` derives `context:` from the caller's `:shared` slice —
+  # `Ash.Scope.to_opts/2` derives `context:` from the caller's `:shared` slice —
   # the channel Ash hands every nested action — and a `context:` override given
   # to it REPLACES that slice wholesale. Merge the extension's marker into what
   # was derived instead, so a `shared` key set on the posting changeset still
