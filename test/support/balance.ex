@@ -42,6 +42,26 @@ defmodule AshDoubleEntry.Test.Balance do
     end
   end
 
+  # Test hook: hand every Balance create's changeset context to the pid a test
+  # stored under `:balance_context_probe` in its process dictionary. Scoped to
+  # creates so the atomic `:shift_balances_after` update keeps its strategy.
+  defmodule ContextProbe do
+    @moduledoc false
+    use Ash.Resource.Change
+
+    def change(changeset, _, _) do
+      case Process.get(:balance_context_probe) do
+        pid when is_pid(pid) ->
+          send(pid, {:balance_context, changeset.action.name, changeset.context})
+
+        _ ->
+          :ok
+      end
+
+      changeset
+    end
+  end
+
   postgres do
     table "balances"
     repo(AshDoubleEntry.Test.Repo)
@@ -59,6 +79,10 @@ defmodule AshDoubleEntry.Test.Balance do
 
   actions do
     defaults [:destroy]
+  end
+
+  changes do
+    change ContextProbe, on: [:create]
   end
 
   validations do

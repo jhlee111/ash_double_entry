@@ -72,14 +72,15 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
           ],
           balance_resource,
           :upsert_balance,
-          Ash.Context.to_opts(context,
+          context
+          |> Ash.Context.to_opts(
             domain: changeset.domain,
             authorize?: authorize?(changeset.domain),
-            context: %{private: %{internal?: true}},
             upsert_fields: [:balance],
             return_errors?: true,
             stop_on_error?: true
           )
+          |> mark_internal()
         )
         |> case do
           %Ash.BulkResult{status: :success} ->
@@ -94,14 +95,15 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
                 delta: delta,
                 after_ulid: result.id
               },
-              Ash.Context.to_opts(context,
+              context
+              |> Ash.Context.to_opts(
                 domain: changeset.domain,
                 authorize?: authorize?(changeset.domain),
-                context: %{private: %{internal?: true}},
                 strategy: [:atomic, :stream, :atomic_batches],
                 return_errors?: true,
                 stop_on_error?: true
               )
+              |> mark_internal()
             )
             |> case do
               %Ash.BulkResult{status: :success} -> {:ok, result}
@@ -113,6 +115,22 @@ defmodule AshDoubleEntry.Entry.Changes.VerifyEntry do
         end
       end)
     end
+  end
+
+  # `Ash.Context.to_opts/2` derives `context:` from the caller's `:shared` slice —
+  # the channel Ash hands every nested action — and a `context:` override given
+  # to it REPLACES that slice wholesale. Merge the extension's marker into what
+  # was derived instead, so a `shared` key set on the posting changeset still
+  # reaches the Balance writes, as it does on the Transfer path.
+  defp mark_internal(opts) do
+    Keyword.update(
+      opts,
+      :context,
+      %{private: %{internal?: true}},
+      &Map.update(&1, :private, %{internal?: true}, fn private ->
+        Map.put(private, :internal?, true)
+      end)
+    )
   end
 
   # Mirrors `VerifyTransfer`: on a domain configured `authorize :always` the

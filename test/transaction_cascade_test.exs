@@ -686,6 +686,37 @@ defmodule AshDoubleEntry.TransactionCascadeTest do
     end
   end
 
+  describe "the caller's shared context reaches the Balance writes" do
+    # `Ash.Context.to_opts/2` forwards exactly the `:shared` slice of the caller's
+    # context to a nested action call — Ash documents `:shared` as the channel
+    # every nested action sees, and the Transfer path forwards it untouched.
+    # VerifyEntry passed `context:` to `to_opts` as an OVERRIDE, which replaces
+    # that slice wholesale, so a `shared` key set on `Transaction.post` reached
+    # the Entry changesets and then vanished before the Balance writes.
+    test "a shared key set on post is visible on the Balance upsert", ctx do
+      _ = ctx
+      cash = account("shared_cash")
+      revenue = account("shared_revenue")
+      Process.put(:balance_context_probe, self())
+
+      assert {:ok, _} =
+               Transaction
+               |> Ash.Changeset.for_create(:post, %{
+                 entries: [
+                   %{account_id: cash.id, side: :debit, amount: Money.new!(:USD, "10.00")},
+                   %{account_id: revenue.id, side: :credit, amount: Money.new!(:USD, "10.00")}
+                 ]
+               })
+               |> Ash.Changeset.set_context(%{shared: %{request_id: "req-1"}})
+               |> Ash.create()
+
+      assert_received {:balance_context, :upsert_balance, context}
+      assert context[:shared][:request_id] == "req-1"
+      # The extension's own marker must survive alongside it, not replace it.
+      assert context[:private][:internal?] == true
+    end
+  end
+
   describe "skip_balance_updates reaches the cascaded entries (#8)" do
     # The escape hatch for bulk imports: set it on the changeset context and the
     # Balance cascade is skipped. On the Transfer path it has always worked. On
