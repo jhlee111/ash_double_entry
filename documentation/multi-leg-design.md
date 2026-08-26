@@ -204,6 +204,47 @@ Internally:
 account where `entry_id <= :ulid` (with the Entry ULID being the
 canonical key).
 
+### Balance maintenance and write order
+
+A Balance row is a reified running balance: "this account stood at X
+immediately after this write". That is only meaningful with a total
+order over an account's writes, and the order is the ULID — 48 bits of
+millisecond plus 80 random bits. Two writes inside one millisecond
+therefore order by coin flip, and a caller may backdate. Both mean a
+new write can land BEFORE rows that already exist.
+
+The library's answer is to repair rather than to forbid: whichever
+write lands early, every later row of that account is shifted by its
+signed delta, in the same transaction. Two invariants follow, and the
+property suite checks both:
+
+- `balance_as_of(account, t)` equals a fold over that account's own
+  entries and transfers at or before `t`, for any write order.
+- A journal either posts completely or writes nothing — Transaction,
+  Entry and Balance rows alike.
+
+**One repair path, not one per writer.** With an `entry_resource`
+configured an account's rows come in two kinds, keyed by `transfer_id`
+or by `entry_id`, and a comparison against one column is NULL for rows
+of the other kind — it skips them silently. Both writers therefore go
+through the same `:shift_balances_after` action, whose filter compares
+both columns: an Entry runs it once with its signed delta, a Transfer
+once per account (minus on the source, plus on the destination). The
+fork carried two ripples for a while — `:adjust_balance` for Transfers,
+`:shift_balances_after` for entries — and the entry-keyed rows the
+multi-leg feature introduced were added to one of them only. A Transfer
+that sorted before an existing entry then left that account's latest
+balance short by the whole transfer, silently. Duplicated ordering rules
+drift; there is now one.
+
+Ordering also decides locking. `Transaction.post` locks every account
+the journal touches up front, in one batched `FOR UPDATE` issued before
+any row of the journal is inserted, which is what keeps two concurrent
+journals over the same accounts from deadlocking. `Transfer` still locks
+in an after_action, after its own insert has taken key-share locks on
+both accounts, and two opposite-direction transfers can deadlock each
+other — [issue #14](https://github.com/jhlee111/ash_double_entry/issues/14).
+
 ### `Transfer` (existing, layered)
 
 Schema and DSL unchanged. Internally, `Transfer.create` action now:
@@ -404,6 +445,7 @@ spec.
 | D-4 (Validation site) | Ash cascade time | DB sum constraint is awkward |
 | D-5 (Reverse semantic) | New Transaction with flipped sides | GAAP standard, immutable original |
 | D-6 (DSL extension) | `AshDoubleEntry.Transaction` separate | Consistency with Account/Transfer/Balance |
+| D-7 (Balance maintenance) | One repair path — every writer ripples later rows through `:shift_balances_after` | A per-writer ripple has to know every kind of row that exists; duplicated ordering rules drift |
 
 ## What this enables
 
